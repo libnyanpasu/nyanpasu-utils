@@ -189,7 +189,7 @@ impl CoreInstance {
                             #[cfg(windows)]
                             signal: None,
                             #[cfg(unix)]
-                            signal: status.signal(),
+                            signal: std::os::unix::process::ExitStatusExt::signal(&status),
                         }))
                         .await
                     });
