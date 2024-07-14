@@ -174,10 +174,11 @@ impl CoreInstance {
 
         let state_ = self.state.clone();
         let tx_ = tx.clone();
+        let guard_ = guard.clone();
         std::thread::spawn(move || {
             match child_.wait() {
                 Ok(status) => {
-                    let _l = guard.write();
+                    let _l = guard_.write();
                     let _ = block_on(async move {
                         {
                             let mut state = state_.write();
@@ -194,7 +195,7 @@ impl CoreInstance {
                     });
                 }
                 Err(err) => {
-                    let _l = guard.write();
+                    let _l = guard_.write();
                     let _ =
                         block_on(
                             async move { tx_.send(CommandEvent::Error(err.to_string())).await },
@@ -208,6 +209,7 @@ impl CoreInstance {
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(1500));
             if let Ok(None) = child_.try_wait() {
+                let _l = guard.write();
                 {
                     let mut state = state_.write();
                     *state = CoreInstanceState::Running;
