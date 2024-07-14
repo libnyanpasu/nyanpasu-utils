@@ -6,7 +6,7 @@ use parking_lot::{Mutex, RwLock};
 use shared_child::SharedChild;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-use std::{ffi::OsStr, path::PathBuf, process::Command as StdCommand, sync::Arc};
+use std::{ffi::OsStr, path::PathBuf, process::Command as StdCommand, sync::Arc, time::Duration};
 use tokio::{process::Command as TokioCommand, sync::mpsc::Receiver};
 
 // TODO: migrate to https://github.com/tauri-apps/tauri-plugin-shell/blob/v2/src/commands.rs
@@ -123,9 +123,7 @@ impl CoreInstance {
         Ok(())
     }
 
-    pub async fn run(
-        &self,
-    ) -> Result<(Arc<SharedChild>, Receiver<CommandEvent>), CoreInstanceError> {
+    pub fn run(&self) -> Result<(Arc<SharedChild>, Receiver<CommandEvent>), CoreInstanceError> {
         {
             let state = self.state.read();
             if matches!(*state, CoreInstanceState::Running) {
@@ -175,6 +173,7 @@ impl CoreInstance {
         );
 
         let state_ = self.state.clone();
+        let tx_ = tx.clone();
         std::thread::spawn(move || {
             match child_.wait() {
                 Ok(status) => {
@@ -184,7 +183,7 @@ impl CoreInstance {
                             let mut state = state_.write();
                             *state = CoreInstanceState::Stopped;
                         }
-                        tx.send(CommandEvent::Terminated(TerminatedPayload {
+                        tx_.send(CommandEvent::Terminated(TerminatedPayload {
                             code: status.code(),
                             #[cfg(windows)]
                             signal: None,
@@ -196,26 +195,29 @@ impl CoreInstance {
                 }
                 Err(err) => {
                     let _l = guard.write();
-                    let _ = block_on(
-                        async move { tx.send(CommandEvent::Error(err.to_string())).await },
-                    );
+                    let _ =
+                        block_on(
+                            async move { tx_.send(CommandEvent::Error(err.to_string())).await },
+                        );
                 }
             };
         });
-
+        let state_ = self.state.clone();
+        let child_ = child.clone();
         // 等待 1.5 秒，若进程结束则表示失败
-        tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
-        if let Some(state) = child.try_wait()? {
-            return Err(CoreInstanceError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to start instance: {:?}", state),
-            )));
-        }
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(1500));
+            if let Ok(None) = child_.try_wait() {
+                {
+                    let mut state = state_.write();
+                    *state = CoreInstanceState::Running;
+                }
+                let _ = block_on(async move { tx.send(CommandEvent::DelayCheckpointPass).await });
+            }
+        });
         {
             let mut instance = self.instance.lock();
-            let mut state = self.state.write();
             *instance = Some(child.clone());
-            *state = CoreInstanceState::Running;
         }
         Ok((child, rx))
     }

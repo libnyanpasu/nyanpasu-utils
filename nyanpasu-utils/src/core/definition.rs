@@ -62,4 +62,5 @@ pub enum CommandEvent {
     Stderr(String),
     Error(String),
     Terminated(TerminatedPayload),
+    DelayCheckpointPass, // Custom event for a delay health check
 }
