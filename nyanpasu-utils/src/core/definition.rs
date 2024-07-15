@@ -78,11 +78,56 @@ pub enum CoreType {
 impl CoreType {
     pub fn get_executable_name(&self) -> &'static str {
         match self {
-            CoreType::Clash(ClashCoreType::Mihomo) => "mihomo",
-            CoreType::Clash(ClashCoreType::MihomoAlpha) => "mihomo-alpha",
-            CoreType::Clash(ClashCoreType::ClashRust) => "clash-rust",
-            CoreType::Clash(ClashCoreType::ClashPremium) => "clash-premium",
-            CoreType::SingBox => "singbox",
+            CoreType::Clash(ClashCoreType::Mihomo) => {
+                #[cfg(target_os = "windows")]
+                {
+                    "mihomo.exe"
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    "mihomo"
+                }
+            },
+            CoreType::Clash(ClashCoreType::MihomoAlpha) => {
+                #[cfg(target_os = "windows")]
+                {
+                    "mihomo-alpha.exe"
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    "mihomo-alpha"
+                }
+            },
+            CoreType::Clash(ClashCoreType::ClashRust) => {
+                #[cfg(target_os = "windows")]
+                {
+                    "clash-rust.exe"
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    "clash-rust"
+                }
+            },
+            CoreType::Clash(ClashCoreType::ClashPremium) => {
+                #[cfg(target_os = "windows")]
+                {
+                    "clash-premium.exe"
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    "clash-premium"
+                }
+            },
+            CoreType::SingBox => {
+                #[cfg(target_os = "windows")]
+                {
+                    "singbox.exe"
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    "singbox"
+                }
+            },
         }
     }
 }
