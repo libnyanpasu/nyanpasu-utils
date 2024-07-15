@@ -32,7 +32,8 @@ jobs:
         name: Install Rust nightly toolchain
       - uses: Swatinem/rust-cache@v2
         name: Setup Rust cache
-        save-if: ${{ github.ref == 'refs/heads/main' }}
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Install your linters here
 
       - name: Run linters
