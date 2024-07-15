@@ -33,6 +33,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         name: Setup Rust cache
         with:
+          shared-key: ${{ matrix.os }}-ci
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Install your linters here
 
@@ -43,3 +44,5 @@ jobs:
           clippy: true
           auto_fix: true
           commit_message: 'chore: apply linting fixes with ${linter}'
+          git_name: "github-actions[bot]"
+          git_email: "41898282+github-actions[bot]@users.noreply.github.com"
