@@ -37,7 +37,7 @@ jobs:
       # Install your linters here
 
       - name: Run linters
-        uses: wearerequired/lint-action@v2
+        uses: wearerequired/lint-action@master
         with:
           rustfmt: true
           clippy: true
