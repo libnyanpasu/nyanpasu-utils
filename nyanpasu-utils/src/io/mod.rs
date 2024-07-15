@@ -4,8 +4,9 @@
 
 //! IO helpers.
 
+use std::convert::Infallible;
 use std::io::BufRead;
-
+use std::result::Result as StdResult;
 /// Read all bytes until a newline (the `0xA` byte) or a carriage return (`\r`) is reached, and append them to the provided buffer.
 ///
 /// Adapted from <https://doc.rust-lang.org/std/io/trait.BufRead.html#method.read_line>.
@@ -43,5 +44,13 @@ pub fn read_line<R: BufRead + ?Sized>(r: &mut R, buf: &mut Vec<u8>) -> std::io::
         if done || used == 0 {
             return Ok(read);
         }
+    }
+}
+
+/// Unwrap an infallible result.
+pub fn unwrap_infallible<T>(result: StdResult<T, Infallible>) -> T {
+    match result {
+        Ok(value) => value,
+        Err(err) => match err {},
     }
 }
