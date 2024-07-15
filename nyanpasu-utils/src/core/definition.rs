@@ -1,6 +1,7 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, ffi::OsStr, path::Path};
+use std::collections::HashMap;
 
 #[cfg(feature = "serde")]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -71,6 +72,27 @@ pub enum CoreType {
     Clash(ClashCoreType),
     SingBox, // Maybe we would support this in the 2.x?
 }
+
+/// TODO: give a idea to show the meta tags of a core
+/// such as the build info, gccgo, llvm-go, amdv3, amdv4 etc.
+impl CoreType {
+    pub fn get_executable_name(&self) -> &'static str {
+        match self {
+            CoreType::Clash(ClashCoreType::Mihomo) => "mihomo",
+            CoreType::Clash(ClashCoreType::MihomoAlpha) => "mihomo-alpha",
+            CoreType::Clash(ClashCoreType::ClashRust) => "clash-rust",
+            CoreType::Clash(ClashCoreType::ClashPremium) => "clash-premium",
+            CoreType::SingBox => "singbox",
+        }
+    }
+}
+
+// TODO: impl downloadable core and core with different tags
+pub struct CoreMetaData {
+    downloaded: bool,
+}
+
+pub type CoresMetaMap = HashMap<CoreType, CoreMetaData>;
 
 pub struct TerminatedPayload {
     pub code: Option<i32>,
