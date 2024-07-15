@@ -1,7 +1,7 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, ffi::OsStr, path::Path};
 use std::collections::HashMap;
+use std::{borrow::Cow, ffi::OsStr, path::Path};
 
 #[cfg(feature = "serde")]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
