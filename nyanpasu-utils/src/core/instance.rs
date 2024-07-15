@@ -93,6 +93,11 @@ impl CoreInstance {
         self.config_path = config;
     }
 
+    pub fn state(&self) -> CoreInstanceState {
+        let state = self.state.read();
+        state.clone()
+    }
+
     pub async fn check_config(&self, config: Option<PathBuf>) -> Result<(), CoreInstanceError> {
         let config = config.as_ref().unwrap_or(&self.config_path).as_os_str();
         let output = TokioCommand::new(&self.binary_path)
