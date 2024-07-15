@@ -11,6 +11,7 @@ default = ["core_manager", "dirs", "serde"]
 core_manager = ["dep:os_pipe", "dep:encoding_rs", "dep:shared_child"]
 dirs = ["dep:dirs-utils"]
 serde = ["dep:serde"]
+os = []
 
 [dependencies]
 tracing = { workspace = true }

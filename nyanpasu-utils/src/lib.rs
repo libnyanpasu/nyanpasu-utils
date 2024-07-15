@@ -10,3 +10,6 @@ pub mod runtime;
 
 #[cfg(feature = "dirs")]
 pub mod dirs;
+
+#[cfg(feature = "os")]
+mod os;
