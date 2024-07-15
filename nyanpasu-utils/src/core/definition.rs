@@ -87,7 +87,7 @@ impl CoreType {
                 {
                     "mihomo"
                 }
-            },
+            }
             CoreType::Clash(ClashCoreType::MihomoAlpha) => {
                 #[cfg(target_os = "windows")]
                 {
@@ -97,7 +97,7 @@ impl CoreType {
                 {
                     "mihomo-alpha"
                 }
-            },
+            }
             CoreType::Clash(ClashCoreType::ClashRust) => {
                 #[cfg(target_os = "windows")]
                 {
@@ -107,7 +107,7 @@ impl CoreType {
                 {
                     "clash-rust"
                 }
-            },
+            }
             CoreType::Clash(ClashCoreType::ClashPremium) => {
                 #[cfg(target_os = "windows")]
                 {
@@ -117,7 +117,7 @@ impl CoreType {
                 {
                     "clash-premium"
                 }
-            },
+            }
             CoreType::SingBox => {
                 #[cfg(target_os = "windows")]
                 {
@@ -127,7 +127,7 @@ impl CoreType {
                 {
                     "singbox"
                 }
-            },
+            }
         }
     }
 }
