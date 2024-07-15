@@ -139,6 +139,7 @@ pub struct CoreMetaData {
 
 pub type CoresMetaMap = HashMap<CoreType, CoreMetaData>;
 
+#[derive(Debug, Clone)]
 pub struct TerminatedPayload {
     pub code: Option<i32>,
     pub signal: Option<i32>,
