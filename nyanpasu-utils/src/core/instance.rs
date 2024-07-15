@@ -14,10 +14,10 @@ use tokio::{process::Command as TokioCommand, sync::mpsc::Receiver};
 #[derive(Builder, Debug)]
 #[builder(build_fn(validate = "Self::validate"))]
 pub struct CoreInstance {
-    core_type: CoreType,
-    binary_path: PathBuf,
-    app_dir: PathBuf,
-    config_path: PathBuf,
+    pub core_type: CoreType,
+    pub binary_path: PathBuf,
+    pub app_dir: PathBuf,
+    pub config_path: PathBuf,
     #[builder(default = "self.default_instance()", setter(skip))]
     instance: Mutex<Option<Arc<SharedChild>>>,
     #[builder(default = "self.default_state()", setter(skip))]
