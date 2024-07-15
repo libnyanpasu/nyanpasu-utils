@@ -7,9 +7,10 @@ authors.workspace = true
 repository.workspace = true
 
 [features]
-default = ["core_manager", "dirs"]
+default = ["core_manager", "dirs", "serde"]
 core_manager = ["dep:os_pipe", "dep:encoding_rs", "dep:shared_child"]
 dirs = ["dep:dirs-utils"]
+serde = ["dep:serde"]
 
 [dependencies]
 tracing = { workspace = true }
@@ -23,3 +24,4 @@ encoding_rs = { version = "0.8", optional = true }
 memchr = "2.7"
 shared_child = { version = "1", optional = true }
 dirs-utils = { path = "../dirs-utils", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }

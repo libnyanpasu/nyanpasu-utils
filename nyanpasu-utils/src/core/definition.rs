@@ -1,6 +1,18 @@
 use std::{borrow::Cow, ffi::OsStr, path::Path};
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum ClashCoreType {
+    Mihomo,
+    MihomoAlpha,
+    ClashRust,
+    ClashPremium,
+}
+
+#[cfg(not(feature = "serde"))]
+#[derive(Debug, Clone, Copy)]
 pub enum ClashCoreType {
     Mihomo,
     MihomoAlpha,
@@ -46,6 +58,14 @@ impl ClashCoreType {
     }
 }
 
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CoreType {
+    Clash(ClashCoreType),
+    SingBox, // Maybe we would support this in the 2.x?
+}
+
+#[cfg(not(feature = "serde"))]
 #[derive(Debug, Clone)]
 pub enum CoreType {
     Clash(ClashCoreType),
