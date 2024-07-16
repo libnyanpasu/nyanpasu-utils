@@ -6,18 +6,22 @@ pub async fn get_current_user_sid() -> IoResult<String> {
         .args(&["/C", "wmic useraccount where name='%username%' get sid"])
         .output()
         .await
-        .map_err(|e| format!("Failed to execute command: {}", e))?;
+        .map_err(|e| {
+            IoError::new(
+                IoErrorKind::Other,
+                format!("Failed to execute command: {}", e),
+            )
+        })?;
 
     if !output.status.success() {
         return Err(IoError::new(IoErrorKind::Other, "Command failed"));
     }
 
-    let output_str = str::from_utf8(&output.stdout)
-        .map_err(|e| format!("Failed to convert output to string: {}", e))?;
+    let output_str = String::from_utf8_lossy(&output.stdout);
 
     let lines: Vec<&str> = output_str.lines().collect();
     if lines.len() < 2 {
-        return Err("Unexpected output format".to_string());
+        return Err(IoError::new(IoErrorKind::Other, "Unexpected output format"));
     }
 
     let sid = lines[1].trim().to_string();

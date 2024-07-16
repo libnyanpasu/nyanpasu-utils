@@ -7,7 +7,7 @@ authors.workspace = true
 repository.workspace = true
 
 [features]
-default = ["core_manager", "dirs", "serde"]
+default = ["core_manager", "dirs", "serde", "os"]
 core_manager = ["dep:os_pipe", "dep:encoding_rs", "dep:shared_child"]
 dirs = ["dep:dirs-utils"]
 serde = ["dep:serde"]
