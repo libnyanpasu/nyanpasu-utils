@@ -79,54 +79,19 @@ impl CoreType {
     pub fn get_executable_name(&self) -> &'static str {
         match self {
             CoreType::Clash(ClashCoreType::Mihomo) => {
-                #[cfg(target_os = "windows")]
-                {
-                    "mihomo.exe"
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    "mihomo"
-                }
+                constcat::concat!("mihomo", std::env::consts::EXE_SUFFIX)
             }
             CoreType::Clash(ClashCoreType::MihomoAlpha) => {
-                #[cfg(target_os = "windows")]
-                {
-                    "mihomo-alpha.exe"
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    "mihomo-alpha"
-                }
+                constcat::concat!("mihomo-alpha", std::env::consts::EXE_SUFFIX)
             }
             CoreType::Clash(ClashCoreType::ClashRust) => {
-                #[cfg(target_os = "windows")]
-                {
-                    "clash-rust.exe"
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    "clash-rust"
-                }
+                constcat::concat!("clash-rs", std::env::consts::EXE_SUFFIX)
             }
             CoreType::Clash(ClashCoreType::ClashPremium) => {
-                #[cfg(target_os = "windows")]
-                {
-                    "clash-premium.exe"
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    "clash-premium"
-                }
+                constcat::concat!("clash", std::env::consts::EXE_SUFFIX)
             }
             CoreType::SingBox => {
-                #[cfg(target_os = "windows")]
-                {
-                    "singbox.exe"
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    "singbox"
-                }
+                constcat::concat!("singbox", std::env::consts::EXE_SUFFIX)
             }
         }
     }
