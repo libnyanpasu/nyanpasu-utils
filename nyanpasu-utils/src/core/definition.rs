@@ -6,9 +6,13 @@ use std::{borrow::Cow, ffi::OsStr, path::Path};
 #[cfg(feature = "serde")]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ClashCoreType {
+    #[serde(rename = "mihomo")]
     Mihomo,
+    #[serde(rename = "mihomo-alpha")]
     MihomoAlpha,
+    #[serde(rename = "clash-rs")]
     ClashRust,
+    #[serde(rename = "clash")]
     ClashPremium,
 }
 
@@ -62,7 +66,9 @@ impl ClashCoreType {
 #[cfg(feature = "serde")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CoreType {
+    #[serde(rename = "clash")]
     Clash(ClashCoreType),
+    #[serde(rename = "singbox")]
     SingBox, // Maybe we would support this in the 2.x?
 }
 
