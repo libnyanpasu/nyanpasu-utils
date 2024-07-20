@@ -1,4 +1,4 @@
-use crate::runtime::block_on;
+use crate::runtime::{block_on, spawn};
 
 use super::{utils::spawn_pipe_reader, ClashCoreType, CommandEvent, CoreType, TerminatedPayload};
 use os_pipe::pipe;
@@ -213,13 +213,15 @@ impl CoreInstance {
         // 等待 1.5 秒，若进程结束则表示失败
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(1500));
-            if let Ok(None) = child_.try_wait() {
+            let state = child_.try_wait();
+            tracing::debug!("instance check point: {:?}", state);
+            if let Ok(None) = state {
                 let _l = guard.write();
                 {
                     let mut state = state_.write();
                     *state = CoreInstanceState::Running;
                 }
-                let _ = block_on(async move { tx.send(CommandEvent::DelayCheckpointPass).await });
+                spawn(async move { tx.send(CommandEvent::DelayCheckpointPass).await });
             }
         });
         {
