@@ -6,6 +6,8 @@ use parking_lot::RwLock;
 use tokio::sync::mpsc::Sender;
 use tracing_attributes::instrument;
 
+use crate::runtime;
+
 use super::CommandEvent;
 
 #[instrument]
@@ -60,7 +62,7 @@ pub(super) fn spawn_pipe_reader<F: Fn(String) -> CommandEvent + Send + Copy + 's
                         Some(encoding) => Ok(encoding.decode_with_bom_removal(&buf).0.into()),
                         None => String::from_utf8(buf.clone()),
                     };
-                    tokio::spawn(async move {
+                    runtime::spawn(async move {
                         let _ = match line {
                             Ok(line) => tx_.send(wrapper(line)).await,
                             Err(e) => tx_.send(CommandEvent::Error(e.to_string())).await,
@@ -69,7 +71,9 @@ pub(super) fn spawn_pipe_reader<F: Fn(String) -> CommandEvent + Send + Copy + 's
                 }
                 Err(e) => {
                     let tx_ = tx.clone();
-                    tokio::spawn(async move { tx_.send(CommandEvent::Error(e.to_string())).await });
+                    runtime::spawn(
+                        async move { tx_.send(CommandEvent::Error(e.to_string())).await },
+                    );
                     break;
                 }
             }
