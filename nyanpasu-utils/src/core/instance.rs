@@ -270,14 +270,10 @@ impl CoreInstance {
         instance.kill()?;
         loop {
             if let Some(state) = instance.try_wait()? {
-                if state.success() {
-                    break;
-                } else {
-                    return Err(CoreInstanceError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("Failed to kill instance: {:?}", state),
-                    )));
+                if !state.success() {
+                    tracing::warn!("instance terminated with error: {:?}", state);
                 }
+                break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
