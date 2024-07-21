@@ -8,6 +8,7 @@ use shared_child::SharedChild;
 use std::os::windows::process::CommandExt;
 use std::{ffi::OsStr, path::PathBuf, process::Command as StdCommand, sync::Arc, time::Duration};
 use tokio::{process::Command as TokioCommand, sync::mpsc::Receiver};
+use tracing_attributes::instrument;
 
 // TODO: migrate to https://github.com/tauri-apps/tauri-plugin-shell/blob/v2/src/commands.rs
 
@@ -18,6 +19,8 @@ pub struct CoreInstance {
     pub binary_path: PathBuf,
     pub app_dir: PathBuf,
     pub config_path: PathBuf,
+    /// A pid hold the instance, should check it running or not while start instance
+    pid_path: PathBuf,
     #[builder(default = "self.default_instance()", setter(skip))]
     instance: Mutex<Option<Arc<SharedChild>>>,
     #[builder(default = "self.default_state()", setter(skip))]
@@ -128,6 +131,18 @@ impl CoreInstance {
         Ok(())
     }
 
+    #[instrument(skip(self))]
+    async fn kill_instance_by_pid_file(&self) -> Result<(), std::io::Error> {
+        tracing::debug!("kill instance by pid file: {:?}", self.pid_path);
+        crate::os::kill_by_pid_file(&self.pid_path).await
+    }
+
+    #[instrument(skip(self))]
+    async fn write_pid_file(&self, pid: u32) -> Result<(), std::io::Error> {
+        crate::os::create_pid_file(&self.pid_path, pid).await
+    }
+
+    #[instrument(skip(self))]
     pub fn run(&self) -> Result<(Arc<SharedChild>, Receiver<CommandEvent>), CoreInstanceError> {
         {
             let state = self.state.read();
@@ -135,6 +150,14 @@ impl CoreInstance {
                 return Err(CoreInstanceError::StateCheckFailed);
             }
         }
+
+        // kill instance by pid file if exists
+        block_on(async {
+            if let Err(err) = self.kill_instance_by_pid_file().await {
+                tracing::error!("Failed to kill instance by pid file: {:?}", err);
+            }
+        });
+
         let args = match self.core_type {
             CoreType::Clash(ref core_type) => {
                 core_type.get_run_args(&self.app_dir, &self.config_path)
@@ -222,6 +245,11 @@ impl CoreInstance {
                     *state = CoreInstanceState::Running;
                 }
                 spawn(async move { tx.send(CommandEvent::DelayCheckpointPass).await });
+            }
+        });
+        block_on(async {
+            if let Err(err) = self.write_pid_file(child.id()).await {
+                tracing::error!("Failed to write pid file: {:?}", err);
             }
         });
         {

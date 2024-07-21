@@ -7,11 +7,11 @@ authors.workspace = true
 repository.workspace = true
 
 [features]
-default = ["core_manager", "dirs", "serde", "os"]
-core_manager = ["dep:os_pipe", "dep:encoding_rs", "dep:shared_child"]
+default = ["core_manager", "dirs", "serde"]
+core_manager = ["os", "dep:os_pipe", "dep:encoding_rs", "dep:shared_child"]
 dirs = ["dep:dirs-utils"]
 serde = ["dep:serde"]
-os = []
+os = ["dep:kill_tree", "dep:sysinfo"]
 
 [dependencies]
 tracing = { workspace = true }
@@ -27,3 +27,5 @@ shared_child = { version = "1", optional = true }
 dirs-utils = { path = "../dirs-utils", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 constcat = "0.5.0"
+kill_tree = { version = "0.2.4", features = ["tokio"], optional = true }
+sysinfo = { version = "0.30", optional = true }

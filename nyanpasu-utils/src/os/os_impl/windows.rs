@@ -3,7 +3,7 @@ use tokio::process::Command;
 
 pub async fn get_current_user_sid() -> IoResult<String> {
     let output = Command::new("cmd")
-        .args(&["/C", "wmic useraccount where name='%username%' get sid"])
+        .args(["/C", "wmic useraccount where name='%username%' get sid"])
         .output()
         .await
         .map_err(|e| {
