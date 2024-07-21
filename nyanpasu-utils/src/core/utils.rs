@@ -2,7 +2,7 @@ use std::{io::BufReader, sync::Arc};
 
 use encoding_rs::Encoding;
 use os_pipe::PipeReader;
-use std::sync::RwLock;
+use parking_lot::RwLock;
 use tokio::sync::mpsc::Sender;
 use tracing_attributes::instrument;
 
@@ -46,9 +46,8 @@ pub(super) fn spawn_pipe_reader<F: Fn(String) -> CommandEvent + Send + Copy + 's
     character_encoding: Option<&'static Encoding>,
 ) {
     std::thread::spawn(move || {
-        let _lock = guard.read().unwrap();
+        let _lock = guard.read();
         let mut reader = BufReader::new(pipe_reader);
-
         let mut buf = Vec::new();
         loop {
             buf.clear();

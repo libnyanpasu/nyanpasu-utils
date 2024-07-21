@@ -1,4 +1,4 @@
-use crate::runtime::{block_on, spawn};
+use crate::runtime::block_on;
 
 use super::{utils::spawn_pipe_reader, ClashCoreType, CommandEvent, CoreType, TerminatedPayload};
 use os_pipe::pipe;
@@ -7,7 +7,7 @@ use shared_child::SharedChild;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::{ffi::OsStr, path::PathBuf, process::Command as StdCommand, sync::Arc, time::Duration};
-use tokio::{process::Command as TokioCommand, sync::mpsc::Receiver, time::sleep};
+use tokio::{process::Command as TokioCommand, sync::mpsc::Receiver};
 use tracing_attributes::instrument;
 
 // TODO: migrate to https://github.com/tauri-apps/tauri-plugin-shell/blob/v2/src/commands.rs
@@ -188,7 +188,7 @@ impl CoreInstance {
             SharedChild::spawn(&mut command)?
         });
         let child_ = child.clone();
-        let guard = Arc::new(std::sync::RwLock::new(()));
+        let guard = Arc::new(RwLock::new(()));
         spawn_pipe_reader(
             tx.clone(),
             guard.clone(),
@@ -210,7 +210,8 @@ impl CoreInstance {
         std::thread::spawn(move || {
             let _ = match child_.wait() {
                 Ok(status) => {
-                    let _l = guard_.write().unwrap();
+                    tracing::trace!("instance terminated: {:?}", status);
+                    let _l = guard_.write();
                     block_on(async move {
                         {
                             let mut state = state_.write();
@@ -227,7 +228,8 @@ impl CoreInstance {
                     })
                 }
                 Err(err) => {
-                    let _l = guard_.write().unwrap();
+                    tracing::trace!("instance terminated with error: {:?}", err);
+                    let _l = guard_.write();
                     block_on(async move { tx_.send(CommandEvent::Error(err.to_string())).await })
                 }
             };
@@ -244,11 +246,8 @@ impl CoreInstance {
                     let mut state = state_.write();
                     *state = CoreInstanceState::Running;
                 }
-                tracing::debug!("send delay checkpoint pass");
-                let _l = guard.write().unwrap();
-                tracing::debug!("send delay checkpoint pass22");
+                let _l = guard.read();
                 let _ = block_on(async move { tx.send(CommandEvent::DelayCheckpointPass).await });
-                tracing::debug!("send delay checkpoint pass33");
             }
         });
         if let Err(err) = self.write_pid_file(child.id()).await {
