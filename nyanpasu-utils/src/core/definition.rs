@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::{borrow::Cow, ffi::OsStr, path::Path};
 
 #[cfg(feature = "serde")]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
 pub enum ClashCoreType {
     #[serde(rename = "mihomo")]
     Mihomo,
@@ -17,12 +17,29 @@ pub enum ClashCoreType {
 }
 
 #[cfg(not(feature = "serde"))]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ClashCoreType {
     Mihomo,
     MihomoAlpha,
     ClashRust,
     ClashPremium,
+}
+
+impl AsRef<str> for ClashCoreType {
+    fn as_ref(&self) -> &str {
+        match self {
+            ClashCoreType::Mihomo => "mihomo",
+            ClashCoreType::MihomoAlpha => "mihomo-alpha",
+            ClashCoreType::ClashRust => "clash-rs",
+            ClashCoreType::ClashPremium => "clash",
+        }
+    }
+}
+
+impl std::fmt::Display for ClashCoreType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_ref())
+    }
 }
 
 impl ClashCoreType {
@@ -64,7 +81,7 @@ impl ClashCoreType {
 }
 
 #[cfg(feature = "serde")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub enum CoreType {
     #[serde(rename = "clash")]
     Clash(ClashCoreType),
@@ -73,7 +90,7 @@ pub enum CoreType {
 }
 
 #[cfg(not(feature = "serde"))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum CoreType {
     Clash(ClashCoreType),
     SingBox, // Maybe we would support this in the 2.x?
@@ -100,6 +117,31 @@ impl CoreType {
                 constcat::concat!("singbox", std::env::consts::EXE_SUFFIX)
             }
         }
+    }
+
+    pub fn get_supported_cores() -> &'static [CoreType] {
+        &[
+            CoreType::Clash(ClashCoreType::Mihomo),
+            CoreType::Clash(ClashCoreType::MihomoAlpha),
+            CoreType::Clash(ClashCoreType::ClashRust),
+            CoreType::Clash(ClashCoreType::ClashPremium),
+            // CoreType::SingBox,
+        ]
+    }
+}
+
+impl AsRef<str> for CoreType {
+    fn as_ref(&self) -> &str {
+        match self {
+            CoreType::Clash(clash) => clash.as_ref(),
+            CoreType::SingBox => "singbox",
+        }
+    }
+}
+
+impl std::fmt::Display for CoreType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_ref())
     }
 }
 
