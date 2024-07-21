@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::{borrow::Cow, ffi::OsStr, path::Path};
 
 #[cfg(feature = "serde")]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub enum ClashCoreType {
     #[serde(rename = "mihomo")]
     Mihomo,
@@ -17,7 +17,7 @@ pub enum ClashCoreType {
 }
 
 #[cfg(not(feature = "serde"))]
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum ClashCoreType {
     Mihomo,
     MihomoAlpha,
@@ -81,7 +81,7 @@ impl ClashCoreType {
 }
 
 #[cfg(feature = "serde")]
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub enum CoreType {
     #[serde(rename = "clash")]
     Clash(ClashCoreType),
@@ -90,7 +90,7 @@ pub enum CoreType {
 }
 
 #[cfg(not(feature = "serde"))]
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum CoreType {
     Clash(ClashCoreType),
     SingBox, // Maybe we would support this in the 2.x?
