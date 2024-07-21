@@ -12,6 +12,7 @@ core_manager = ["os", "dep:os_pipe", "dep:encoding_rs", "dep:shared_child"]
 dirs = ["dep:dirs-utils"]
 serde = ["dep:serde"]
 os = ["dep:kill_tree", "dep:sysinfo"]
+deadlock_detection = ["parking_lot/deadlock_detection"]
 
 [dependencies]
 tracing = { workspace = true }

@@ -50,7 +50,7 @@ pub async fn kill_pid(pid: u32) -> Result<(), std::io::Error> {
     tracing::debug!("kill pid: {}", pid);
     if pid_exists(pid) {
         tracing::debug!("pid exists, kill it");
-        let list = kill_tree::tokio::kill_tree(pid as u32)
+        let list = kill_tree::tokio::kill_tree(pid)
             .await
             .map_err(|e| IoError::new(std::io::ErrorKind::Other, format!("kill error: {:?}", e)))?;
         for p in list {

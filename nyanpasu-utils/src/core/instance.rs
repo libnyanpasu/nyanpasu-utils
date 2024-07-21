@@ -7,7 +7,7 @@ use shared_child::SharedChild;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::{ffi::OsStr, path::PathBuf, process::Command as StdCommand, sync::Arc, time::Duration};
-use tokio::{process::Command as TokioCommand, sync::mpsc::Receiver};
+use tokio::{process::Command as TokioCommand, sync::mpsc::Receiver, time::sleep};
 use tracing_attributes::instrument;
 
 // TODO: migrate to https://github.com/tauri-apps/tauri-plugin-shell/blob/v2/src/commands.rs
@@ -45,7 +45,7 @@ impl CoreInstanceBuilder {
 
     fn validate(&self) -> Result<(), String> {
         match self.binary_path {
-            Some(ref path) if !path.exists() => {
+            Some(ref path) if !path.exists() && path.is_dir() => {
                 return Err(format!("binary_path {:?} does not exist", path));
             }
             None => {
@@ -55,7 +55,7 @@ impl CoreInstanceBuilder {
         }
 
         match self.app_dir {
-            Some(ref path) if !path.exists() => {
+            Some(ref path) if !path.exists() && path.is_dir() => {
                 return Err(format!("app_dir {:?} does not exist", path));
             }
             None => {
@@ -65,7 +65,7 @@ impl CoreInstanceBuilder {
         }
 
         match self.config_path {
-            Some(ref path) if !path.exists() => {
+            Some(ref path) if !path.exists() && path.is_file() => {
                 return Err(format!("config_path {:?} does not exist", path));
             }
             None => {
@@ -74,14 +74,8 @@ impl CoreInstanceBuilder {
             _ => {}
         }
 
-        match self.pid_path {
-            Some(ref path) if !path.exists() => {
-                return Err(format!("pid_path {:?} does not exist", path));
-            }
-            None => {
-                return Err("pid_path is required".into());
-            }
-            _ => {}
+        if self.pid_path.is_none() {
+            return Err("pid_path is required".into());
         }
 
         if self.core_type.is_none() {
@@ -153,20 +147,20 @@ impl CoreInstance {
     }
 
     #[instrument(skip(self))]
-    pub fn run(&self) -> Result<(Arc<SharedChild>, Receiver<CommandEvent>), CoreInstanceError> {
+    /// Run the instance, it is a blocking operation
+    pub async fn run(
+        &self,
+    ) -> Result<(Arc<SharedChild>, Receiver<CommandEvent>), CoreInstanceError> {
         {
             let state = self.state.read();
             if matches!(*state, CoreInstanceState::Running) {
                 return Err(CoreInstanceError::StateCheckFailed);
             }
         }
-
         // kill instance by pid file if exists
-        block_on(async {
-            if let Err(err) = self.kill_instance_by_pid_file().await {
-                tracing::error!("Failed to kill instance by pid file: {:?}", err);
-            }
-        });
+        if let Err(err) = self.kill_instance_by_pid_file().await {
+            tracing::error!("Failed to kill instance by pid file: {:?}", err);
+        }
 
         let args = match self.core_type {
             CoreType::Clash(ref core_type) => {
@@ -194,7 +188,7 @@ impl CoreInstance {
             SharedChild::spawn(&mut command)?
         });
         let child_ = child.clone();
-        let guard = Arc::new(RwLock::new(()));
+        let guard = Arc::new(std::sync::RwLock::new(()));
         spawn_pipe_reader(
             tx.clone(),
             guard.clone(),
@@ -214,10 +208,10 @@ impl CoreInstance {
         let tx_ = tx.clone();
         let guard_ = guard.clone();
         std::thread::spawn(move || {
-            match child_.wait() {
+            let _ = match child_.wait() {
                 Ok(status) => {
-                    let _l = guard_.write();
-                    let _ = block_on(async move {
+                    let _l = guard_.write().unwrap();
+                    block_on(async move {
                         {
                             let mut state = state_.write();
                             *state = CoreInstanceState::Stopped;
@@ -230,14 +224,11 @@ impl CoreInstance {
                             signal: std::os::unix::process::ExitStatusExt::signal(&status),
                         }))
                         .await
-                    });
+                    })
                 }
                 Err(err) => {
-                    let _l = guard_.write();
-                    let _ =
-                        block_on(
-                            async move { tx_.send(CommandEvent::Error(err.to_string())).await },
-                        );
+                    let _l = guard_.write().unwrap();
+                    block_on(async move { tx_.send(CommandEvent::Error(err.to_string())).await })
                 }
             };
         });
@@ -249,19 +240,20 @@ impl CoreInstance {
             let state = child_.try_wait();
             tracing::debug!("instance check point: {:?}", state);
             if let Ok(None) = state {
-                let _l = guard.write();
                 {
                     let mut state = state_.write();
                     *state = CoreInstanceState::Running;
                 }
-                spawn(async move { tx.send(CommandEvent::DelayCheckpointPass).await });
+                tracing::debug!("send delay checkpoint pass");
+                let _l = guard.write().unwrap();
+                tracing::debug!("send delay checkpoint pass22");
+                let _ = block_on(async move { tx.send(CommandEvent::DelayCheckpointPass).await });
+                tracing::debug!("send delay checkpoint pass33");
             }
         });
-        block_on(async {
-            if let Err(err) = self.write_pid_file(child.id()).await {
-                tracing::error!("Failed to write pid file: {:?}", err);
-            }
-        });
+        if let Err(err) = self.write_pid_file(child.id()).await {
+            tracing::error!("Failed to write pid file: {:?}", err);
+        }
         {
             let mut instance = self.instance.lock();
             *instance = Some(child.clone());
