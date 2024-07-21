@@ -262,11 +262,11 @@ impl CoreInstance {
 
     /// Kill the instance, it is a blocking operation
     pub fn kill(&self) -> Result<(), CoreInstanceError> {
-        let instance = self.instance.lock();
-        if instance.is_none() {
+        let mut instance_holder = self.instance.lock();
+        if instance_holder.is_none() {
             return Err(CoreInstanceError::StateCheckFailed);
         }
-        let instance = instance.as_ref().unwrap();
+        let instance = instance_holder.as_ref().unwrap();
         instance.kill()?;
         loop {
             if let Some(state) = instance.try_wait()? {
@@ -277,10 +277,9 @@ impl CoreInstance {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+        *instance_holder = None;
         {
-            let mut instance = self.instance.lock();
             let mut state = self.state.write();
-            *instance = None;
             *state = CoreInstanceState::Stopped;
         }
         Ok(())
