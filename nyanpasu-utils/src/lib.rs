@@ -12,4 +12,4 @@ pub mod runtime;
 pub mod dirs;
 
 #[cfg(feature = "os")]
-mod os;
+pub mod os;

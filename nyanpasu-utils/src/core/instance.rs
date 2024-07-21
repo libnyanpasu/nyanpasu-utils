@@ -74,6 +74,16 @@ impl CoreInstanceBuilder {
             _ => {}
         }
 
+        match self.pid_path {
+            Some(ref path) if !path.exists() => {
+                return Err(format!("pid_path {:?} does not exist", path));
+            }
+            None => {
+                return Err("pid_path is required".into());
+            }
+            _ => {}
+        }
+
         if self.core_type.is_none() {
             return Err("core_type is required".into());
         }
