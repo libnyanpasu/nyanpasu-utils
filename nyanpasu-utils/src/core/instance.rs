@@ -1,6 +1,7 @@
 use crate::runtime::block_on;
 
 use super::{utils::spawn_pipe_reader, ClashCoreType, CommandEvent, CoreType, TerminatedPayload};
+use crate::os::ChildExt;
 use os_pipe::pipe;
 use parking_lot::{Mutex, RwLock};
 use shared_child::SharedChild;
@@ -267,7 +268,7 @@ impl CoreInstance {
             return Err(CoreInstanceError::StateCheckFailed);
         }
         let instance = instance_holder.as_ref().unwrap();
-        instance.kill()?;
+        instance.gracefully_kill()?;
         loop {
             if let Some(state) = instance.try_wait()? {
                 if !state.success() {

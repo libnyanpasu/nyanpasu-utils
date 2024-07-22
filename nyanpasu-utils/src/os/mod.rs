@@ -10,6 +10,8 @@ use tracing_attributes::instrument;
 use std::{fmt::Display, io::Error as IoError, path::Path};
 use tokio::{fs::OpenOptions, io::AsyncWriteExt};
 
+pub use os_utils::*;
+
 #[instrument]
 pub async fn create_pid_file<T>(path: T, pid: u32) -> Result<(), std::io::Error>
 where
