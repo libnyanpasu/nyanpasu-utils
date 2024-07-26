@@ -267,6 +267,7 @@ impl CoreInstance {
 
     // TODO: maybe we should add a timeout for this function
     /// Kill the instance, it is a blocking operation
+    #[instrument(skip(self))]
     pub async fn kill(&self) -> Result<(), CoreInstanceError> {
         let instance = {
             let instance_holder = self.instance.lock();
@@ -276,11 +277,9 @@ impl CoreInstance {
             instance_holder.as_ref().unwrap().clone()
         };
         let instance_ = instance.clone();
-        match tokio::task::spawn_blocking(move || instance_.gracefully_kill())
-            .await
-            .map_err(|e| CoreInstanceError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))
-        {
-            Ok(_) => {
+        tracing::debug!("try to gracefully kill instance...");
+        match tokio::task::spawn_blocking(move || instance_.gracefully_kill()).await {
+            Ok(Ok(())) => {
                 for _ in 0..20 {
                     if let Some(state) = instance.try_wait()? {
                         if !state.success() {
@@ -291,10 +290,14 @@ impl CoreInstance {
                     std::thread::sleep(Duration::from_millis(100));
                 }
             }
+            Ok(Err(e)) => {
+                tracing::warn!("Failed to gracefully kill instance: {:?}", e);
+            }
             Err(err) => {
-                tracing::warn!("Failed to gracefully kill instance: {:?}", err);
+                tracing::warn!("Failed to spawn gracefully kill thread: {:?}", err);
             }
         }
+        tracing::debug!("gracefully kill failed, try to force kill instance...");
         instance.kill()?;
         // poll the instance until it is terminated
         for i in 0..30 {
