@@ -11,6 +11,10 @@ use std::{ffi::OsStr, path::PathBuf, process::Command as StdCommand, sync::Arc, 
 use tokio::{process::Command as TokioCommand, sync::mpsc::Receiver};
 use tracing_attributes::instrument;
 
+// const DETACHED_PROCESS: u32 = 0x00000008;
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 // TODO: migrate to https://github.com/tauri-apps/tauri-plugin-shell/blob/v2/src/commands.rs
 
 #[derive(Builder, Debug)]
@@ -185,7 +189,7 @@ impl CoreInstance {
                 // .stdin(stdin_reader)
                 .current_dir(&self.app_dir);
             #[cfg(windows)]
-            command.creation_flags(0x8000000); // CREATE_NO_WINDOW
+            command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
             SharedChild::spawn(&mut command)?
         });
         let child_ = child.clone();
@@ -261,14 +265,36 @@ impl CoreInstance {
         Ok((child, rx))
     }
 
+    // TODO: maybe we should add a timeout for this function
     /// Kill the instance, it is a blocking operation
-    pub fn kill(&self) -> Result<(), CoreInstanceError> {
-        let mut instance_holder = self.instance.lock();
-        if instance_holder.is_none() {
-            return Err(CoreInstanceError::StateCheckFailed);
+    pub async fn kill(&self) -> Result<(), CoreInstanceError> {
+        let instance = {
+            let instance_holder = self.instance.lock();
+            if instance_holder.is_none() {
+                return Err(CoreInstanceError::StateCheckFailed);
+            }
+            instance_holder.as_ref().unwrap().clone()
+        };
+        let instance_ = instance.clone();
+        match tokio::task::spawn_blocking(move || instance_.gracefully_kill())
+            .await
+            .map_err(|e| CoreInstanceError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))
+        {
+            Ok(_) => loop {
+                if let Some(state) = instance.try_wait()? {
+                    if !state.success() {
+                        tracing::warn!("instance terminated with error: {:?}", state);
+                    }
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            },
+            Err(err) => {
+                tracing::warn!("Failed to gracefully kill instance: {:?}", err);
+            }
         }
-        let instance = instance_holder.as_ref().unwrap();
-        instance.gracefully_kill()?;
+        instance.kill()?;
+        // poll the instance until it is terminated
         loop {
             if let Some(state) = instance.try_wait()? {
                 if !state.success() {
@@ -276,9 +302,12 @@ impl CoreInstance {
                 }
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(100));
         }
-        *instance_holder = None;
+        {
+            let mut instance_holder = self.instance.lock();
+            *instance_holder = None;
+        }
         {
             let mut state = self.state.write();
             *state = CoreInstanceState::Stopped;
