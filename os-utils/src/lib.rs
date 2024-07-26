@@ -13,7 +13,7 @@ fn gracefully_kill(pid: u32) -> std::io::Result<()> {
                 std::io::ErrorKind::Other,
                 format!("GenerateConsoleCtrlEvent failed: {:?}", e),
             )
-        });
+        })?;
     }
     Ok(())
 }

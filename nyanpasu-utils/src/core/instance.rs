@@ -280,27 +280,34 @@ impl CoreInstance {
             .await
             .map_err(|e| CoreInstanceError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))
         {
-            Ok(_) => loop {
-                if let Some(state) = instance.try_wait()? {
-                    if !state.success() {
-                        tracing::warn!("instance terminated with error: {:?}", state);
+            Ok(_) => {
+                for _ in 0..20 {
+                    if let Some(state) = instance.try_wait()? {
+                        if !state.success() {
+                            tracing::warn!("instance terminated with error: {:?}", state);
+                        }
+                        return Ok(());
                     }
-                    return Ok(());
+                    std::thread::sleep(Duration::from_millis(100));
                 }
-                std::thread::sleep(Duration::from_millis(100));
-            },
+            }
             Err(err) => {
                 tracing::warn!("Failed to gracefully kill instance: {:?}", err);
             }
         }
         instance.kill()?;
         // poll the instance until it is terminated
-        loop {
+        for i in 0..30 {
             if let Some(state) = instance.try_wait()? {
                 if !state.success() {
                     tracing::warn!("instance terminated with error: {:?}", state);
                 }
                 break;
+            } else if i == 29 {
+                return Err(CoreInstanceError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Failed to kill instance: force kill timeout",
+                )));
             }
             std::thread::sleep(Duration::from_millis(100));
         }
