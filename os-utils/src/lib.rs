@@ -6,9 +6,9 @@ pub trait ChildExt {
 
 #[cfg(windows)]
 fn gracefully_kill(pid: u32) -> std::io::Result<()> {
-    use windows::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_CLOSE_EVENT};
+    use windows::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
     unsafe {
-        GenerateConsoleCtrlEvent(CTRL_CLOSE_EVENT, pid).map_err(|e| {
+        GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::Other,
                 format!("GenerateConsoleCtrlEvent failed: {:?}", e),
