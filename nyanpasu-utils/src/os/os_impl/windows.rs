@@ -4,6 +4,7 @@ use tokio::process::Command;
 pub async fn get_current_user_sid() -> IoResult<String> {
     let output = Command::new("cmd")
         .args(["/C", "wmic useraccount where name='%username%' get sid"])
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
         .output()
         .await
         .map_err(|e| {
