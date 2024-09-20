@@ -12,6 +12,8 @@ pub enum ClashCoreType {
     MihomoAlpha,
     #[serde(rename = "clash-rs")]
     ClashRust,
+    #[serde(rename = "clash-rs-alpha")]
+    ClashRustAlpha,
     #[serde(rename = "clash")]
     ClashPremium,
 }
@@ -31,6 +33,7 @@ impl AsRef<str> for ClashCoreType {
             ClashCoreType::Mihomo => "mihomo",
             ClashCoreType::MihomoAlpha => "mihomo-alpha",
             ClashCoreType::ClashRust => "clash-rs",
+            ClashCoreType::ClashRustAlpha => "clash-rs-alpha",
             ClashCoreType::ClashPremium => "clash",
         }
     }
@@ -60,7 +63,7 @@ impl ClashCoreType {
                 Cow::Borrowed(OsStr::new("-f")),
                 config_path,
             ],
-            ClashCoreType::ClashRust => {
+            ClashCoreType::ClashRust | ClashCoreType::ClashRustAlpha => {
                 vec![
                     Cow::Borrowed(OsStr::new("-d")),
                     app_dir,
@@ -110,6 +113,9 @@ impl CoreType {
             CoreType::Clash(ClashCoreType::ClashRust) => {
                 constcat::concat!("clash-rs", std::env::consts::EXE_SUFFIX)
             }
+            CoreType::Clash(ClashCoreType::ClashRustAlpha) => {
+                constcat::concat!("clash-rs-alpha", std::env::consts::EXE_SUFFIX)
+            }
             CoreType::Clash(ClashCoreType::ClashPremium) => {
                 constcat::concat!("clash", std::env::consts::EXE_SUFFIX)
             }
@@ -124,6 +130,7 @@ impl CoreType {
             CoreType::Clash(ClashCoreType::Mihomo),
             CoreType::Clash(ClashCoreType::MihomoAlpha),
             CoreType::Clash(ClashCoreType::ClashRust),
+            CoreType::Clash(ClashCoreType::ClashRustAlpha),
             CoreType::Clash(ClashCoreType::ClashPremium),
             // CoreType::SingBox,
         ]
