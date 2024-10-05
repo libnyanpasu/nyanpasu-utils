@@ -30,4 +30,4 @@ os-utils = { path = "../os-utils", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 constcat = "0.5.0"
 kill_tree = { version = "0.2.4", features = ["tokio"], optional = true }
-sysinfo = { version = "0.31", optional = true }
+sysinfo = { version = "0.32", optional = true }
