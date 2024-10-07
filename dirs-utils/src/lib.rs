@@ -1,4 +1,4 @@
-use dirs_next::{config_dir, data_local_dir};
+use dirs::{config_dir, data_local_dir};
 use std::path::PathBuf;
 /// Suggest a directory for configuration files.
 /// * - Linux: Resolves to $XDG_CONFIG_HOME/{placeholder} or $HOME/.config/{placeholder}.

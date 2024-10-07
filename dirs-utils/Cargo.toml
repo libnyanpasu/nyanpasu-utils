@@ -7,7 +7,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-dirs-next = "2"
+dirs = "5"
 thiserror.workspace = true
 tracing.workspace = true
 
