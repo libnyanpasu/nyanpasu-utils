@@ -135,6 +135,13 @@ impl CoreType {
             // CoreType::SingBox,
         ]
     }
+
+    pub fn get_supported_cores_executables() -> Vec<&'static str> {
+        Self::get_supported_cores()
+            .iter()
+            .map(|core| core.get_executable_name())
+            .collect()
+    }
 }
 
 impl AsRef<str> for CoreType {

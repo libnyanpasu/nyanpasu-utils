@@ -143,7 +143,11 @@ impl CoreInstance {
     #[instrument(skip(self))]
     async fn kill_instance_by_pid_file(&self) -> Result<(), std::io::Error> {
         tracing::debug!("kill instance by pid file: {:?}", self.pid_path);
-        crate::os::kill_by_pid_file(&self.pid_path).await
+        crate::os::kill_by_pid_file(
+            &self.pid_path,
+            Some(&CoreType::get_supported_cores_executables()),
+        )
+        .await
     }
 
     #[instrument(skip(self))]

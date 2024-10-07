@@ -4,10 +4,11 @@
 mod os_impl;
 
 pub use os_impl::*;
+use std::fmt::Debug;
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 use tracing_attributes::instrument;
 
-use std::{fmt::Display, io::Error as IoError, path::Path};
+use std::{ffi::OsStr, fmt::Display, io::Error as IoError, path::Path};
 use tokio::{fs::OpenOptions, io::AsyncWriteExt};
 
 pub use os_utils::*;
@@ -40,17 +41,30 @@ where
 }
 
 #[instrument]
-pub fn pid_exists(pid: u32) -> bool {
+pub fn pid_exists<Name: AsRef<str> + Debug>(pid: u32, validator: Option<&[Name]>) -> bool {
     let kind = RefreshKind::new().with_processes(ProcessRefreshKind::new());
     let mut system = System::new_with_specifics(kind);
     system.refresh_specifics(kind);
-    system.process(Pid::from_u32(pid)).is_some()
+    system
+        .process(Pid::from_u32(pid))
+        .is_some_and(|p| match validator {
+            Some(validator) => validator
+                .iter()
+                .map(|v| v.as_ref())
+                // FIXME: this validator is designed for core name, it use the ascii name of the process. So it always correct.
+                // If in future, our tool introduce the non-ascii name, we need to change this validator, use the encoding-rs crate to decode the name.
+                .any(|v| p.name().to_string_lossy().contains(v)),
+            None => true,
+        })
 }
 
 #[instrument]
-pub async fn kill_pid(pid: u32) -> Result<(), std::io::Error> {
+pub async fn kill_pid<Name: AsRef<str> + Debug>(
+    pid: u32,
+    validator: Option<&[Name]>,
+) -> Result<(), std::io::Error> {
     tracing::debug!("kill pid: {}", pid);
-    if pid_exists(pid) {
+    if pid_exists(pid, validator) {
         tracing::debug!("pid exists, kill it");
         let list = kill_tree::tokio::kill_tree(pid)
             .await
@@ -65,7 +79,10 @@ pub async fn kill_pid(pid: u32) -> Result<(), std::io::Error> {
 }
 
 #[instrument]
-pub async fn kill_by_pid_file<T>(path: T) -> Result<(), std::io::Error>
+pub async fn kill_by_pid_file<T, Name: AsRef<str> + Debug>(
+    path: T,
+    validator: Option<&[Name]>,
+) -> Result<(), std::io::Error>
 where
     T: AsRef<Path> + std::fmt::Debug,
 {
@@ -76,6 +93,6 @@ where
             return Ok(());
         }
     };
-    kill_pid(pid).await?;
+    kill_pid(pid, validator).await?;
     tokio::fs::remove_file(path).await
 }
