@@ -26,13 +26,16 @@ async fn execute_command(command: &str, args: &[&str]) -> IoResult<String> {
 }
 
 pub async fn get_current_user_sid() -> IoResult<String> {
-    let wmic_command = "cmd";
-    let wmic_args = ["/C", "wmic useraccount where name='%username%' get sid"];
-    let powershell_command = "powershell";
-    let powershell_args = ["-Command", "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value"];
-    let fallback_powershell_args = ["-Command", "Get-WmiObject Win32_UserAccount -Filter \"Name='$env:USERNAME'\" | Select-Object -ExpandProperty SID"];
+    const CMD_BINARY: &str = "cmd";
+    const WMIC_ARGS: [&str; 2] = ["/C", "wmic useraccount where name='%username%' get sid"];
+    const POWERSHELL_BINARY: &str = "powershell";
+    const POWERSHELL_ARGS: [&str; 2] = [
+        "-Command",
+        "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+    ];
+    const FALLBACK_POWERSHELL_ARGS: [&str; 2] = ["-Command", "Get-WmiObject Win32_UserAccount -Filter \"Name='$env:USERNAME'\" | Select-Object -ExpandProperty SID"];
 
-    match execute_command(wmic_command, &wmic_args).await {
+    match execute_command(CMD_BINARY, &WMIC_ARGS).await {
         Ok(output_str) => {
             let lines: Vec<&str> = output_str.lines().collect();
             if lines.len() < 2 {
@@ -42,9 +45,9 @@ pub async fn get_current_user_sid() -> IoResult<String> {
         }
         Err(_) => {
             // Fallback to PowerShell if wmic fails
-            match execute_command(powershell_command, &powershell_args).await {
+            match execute_command(POWERSHELL_BINARY, &POWERSHELL_ARGS).await {
                 Ok(sid) => Ok(sid),
-                Err(_) => execute_command(powershell_command, &fallback_powershell_args).await,
+                Err(_) => execute_command(POWERSHELL_BINARY, &FALLBACK_POWERSHELL_ARGS).await,
             }
         }
     }
