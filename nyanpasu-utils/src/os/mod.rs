@@ -42,7 +42,8 @@ where
 
 #[instrument]
 pub fn pid_exists<Name: AsRef<str> + Debug>(pid: u32, validator: Option<&[Name]>) -> bool {
-    let kind = RefreshKind::new().with_processes(ProcessRefreshKind::new());
+    let kind = RefreshKind::nothing()
+        .with_processes(ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::OnlyIfNotSet));
     let mut system = System::new_with_specifics(kind);
     system.refresh_specifics(kind);
     system
@@ -53,7 +54,10 @@ pub fn pid_exists<Name: AsRef<str> + Debug>(pid: u32, validator: Option<&[Name]>
                 .map(|v| v.as_ref())
                 // FIXME: this validator is designed for core name, it use the ascii name of the process. So it always correct.
                 // If in future, our tool introduce the non-ascii name, we need to change this validator, use the encoding-rs crate to decode the name.
-                .any(|v| p.name().to_string_lossy().contains(v)),
+                .any(|v| {
+                    p.exe()
+                        .is_some_and(|exe| exe.to_string_lossy().to_lowercase().contains(v))
+                }),
             None => true,
         })
 }
