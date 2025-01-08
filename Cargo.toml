@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [ "dirs-utils","nyanpasu-utils", "os-utils"]
+members = [ "dirs-utils", "network-utils","nyanpasu-utils", "os-utils"]
 
 [workspace.package]
 edition = "2021"

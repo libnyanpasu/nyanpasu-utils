@@ -13,3 +13,8 @@ pub mod dirs;
 
 #[cfg(feature = "os")]
 pub mod os;
+
+#[cfg(feature = "network")]
+pub mod network {
+    pub use network_utils::*;
+}
