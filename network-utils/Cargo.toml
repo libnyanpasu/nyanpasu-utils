@@ -8,3 +8,7 @@ repository.workspace = true
 
 [dependencies]
 tempfile = "3"
+log = "0.4"
+
+[dev-dependencies]
+test-log = "0.2"
