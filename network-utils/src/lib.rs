@@ -22,7 +22,7 @@ pub mod macos {
             .to_string())
     }
 
-    pub fn set_dns(service_name: &str, dns: Option<&str>) -> std::io::Result<()> {
+    pub fn set_dns(service_name: &str, dns: Option<Vec<IpAddr>>) -> std::io::Result<()> {
         let dir = tempfile::tempdir()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         let path = dir.path().join("set-macos-dns.sh");
@@ -30,7 +30,17 @@ pub mod macos {
             &path,
             include_str!("./scripts/set-macos-dns.sh")
                 .replace("$1", service_name)
-                .replace("$2", dns.unwrap_or("Empty")),
+                .replace(
+                    "$2",
+                    dns.map(|v| {
+                        v.iter()
+                            .map(|v| v.to_string())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .unwrap_or("Empty".to_string())
+                    .as_str(),
+                ),
         )?;
         let _ = std::process::Command::new("osascript")
             .arg("-e")
@@ -87,8 +97,14 @@ pub mod macos {
 
         #[test]
         fn test_set_dns() {
-            set_dns("Wi-Fi", Some("114.114.114.114")).unwrap();
+            let dns_a: IpAddr = "114.114.114.114".parse().unwrap();
+            let dns_b: IpAddr = "8.8.8.8".parse().unwrap();
+            set_dns("Wi-Fi", Some(vec![dns_a])).unwrap();
+            assert_eq!(get_dns("Wi-Fi").unwrap(), Some(vec![dns_a]));
+            set_dns("Wi-Fi", Some(vec![dns_a, dns_b])).unwrap();
+            assert_eq!(get_dns("Wi-Fi").unwrap(), Some(vec![dns_a, dns_b]));
             set_dns("Wi-Fi", None).unwrap();
+            assert!(get_dns("Wi-FI").unwrap().is_none());
         }
 
         #[test]
