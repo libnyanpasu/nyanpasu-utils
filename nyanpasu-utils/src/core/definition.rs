@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::{borrow::Cow, ffi::OsStr, path::Path};
 
-#[cfg(feature = "serde")]
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ClashCoreType {
     #[serde(rename = "mihomo")]
     Mihomo,
@@ -15,15 +16,6 @@ pub enum ClashCoreType {
     #[serde(rename = "clash-rs-alpha")]
     ClashRustAlpha,
     #[serde(rename = "clash")]
-    ClashPremium,
-}
-
-#[cfg(not(feature = "serde"))]
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub enum ClashCoreType {
-    Mihomo,
-    MihomoAlpha,
-    ClashRust,
     ClashPremium,
 }
 
@@ -83,19 +75,13 @@ impl ClashCoreType {
     }
 }
 
-#[cfg(feature = "serde")]
-#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum CoreType {
     #[serde(rename = "clash")]
     Clash(ClashCoreType),
     #[serde(rename = "singbox")]
-    SingBox, // Maybe we would support this in the 2.x?
-}
-
-#[cfg(not(feature = "serde"))]
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-pub enum CoreType {
-    Clash(ClashCoreType),
     SingBox, // Maybe we would support this in the 2.x?
 }
 
