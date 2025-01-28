@@ -31,7 +31,7 @@ dirs-utils = { path = "../dirs-utils", optional = true }
 os-utils = { path = "../os-utils", optional = true }
 network-utils = { path = "../network-utils", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
-constcat = "0.5.0"
+constcat = "0.6.0"
 kill_tree = { version = "0.2.4", features = ["tokio"], optional = true }
 sysinfo = { version = "0.33", optional = true }
 specta = { version = "^2.0.0-rc.22", optional = true, features = ["derive"] }
