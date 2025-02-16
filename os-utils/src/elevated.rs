@@ -74,8 +74,13 @@ mod unix {
         let uid = Uid::current();
         let groups = getgroups();
         uid.is_root()
-            || groups
-                .iter()
-                .any(|g| Group::from_gid(*g).is_ok_and(|g| ROOT_GROUPS.contains(&g.name)))
+            || groups.iter().any(|g| {
+                Group::from_gid(*g).is_ok_and(|g| g.is_some_and(|g| ROOT_GROUPS.contains(&g)))
+            })
     }
 }
+
+#[cfg(unix)]
+pub use unix::*;
+#[cfg(windows)]
+pub use windows::*;
