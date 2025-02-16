@@ -1,3 +1,5 @@
+pub mod elevated;
+
 pub trait ChildExt {
     /// In windows, it should send CTRL_EVENT_CLOSE to the child process, and wait 5 seconds for it to exit. If not, it will call TerminateProcess to kill it.
     /// In unix, it should send SIGTERM to the child process, and wait 5 seconds for it to exit. If not, it will send SIGKILL to kill it.

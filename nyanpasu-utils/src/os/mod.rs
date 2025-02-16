@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 mod os_impl;
-
+pub use elevated::*;
 pub use os_impl::*;
 use std::fmt::Debug;
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
