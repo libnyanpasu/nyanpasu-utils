@@ -3,7 +3,7 @@ resolver = "2"
 members = [ "dirs-utils", "network-utils","nyanpasu-utils", "os-utils"]
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 license = "GPL-3.0"
 authors = ["LibNyanpasu"]
 repository = "https://github.com/LibNyanpasu/nyanpasu-utils"
