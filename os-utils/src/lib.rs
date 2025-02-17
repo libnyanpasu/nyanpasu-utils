@@ -8,7 +8,7 @@ pub trait ChildExt {
 
 #[cfg(windows)]
 fn gracefully_kill(pid: u32) -> std::io::Result<()> {
-    use windows::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
+    use windows::Win32::System::Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent};
     unsafe {
         GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid).map_err(|e| {
             std::io::Error::new(
@@ -22,7 +22,7 @@ fn gracefully_kill(pid: u32) -> std::io::Result<()> {
 
 #[cfg(unix)]
 fn gracefully_kill(pid: u32) -> std::io::Result<()> {
-    use nix::sys::signal::{kill, Signal};
+    use nix::sys::signal::{Signal, kill};
     use nix::unistd::Pid;
     kill(Pid::from_raw(pid as i32), Signal::SIGTERM).map_err(|e| {
         std::io::Error::new(std::io::ErrorKind::Other, format!("kill failed: {:?}", e))

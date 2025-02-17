@@ -47,7 +47,7 @@ pub enum RetrieveDirError {
 
 #[cfg(windows)]
 fn get_program_data_dir() -> Result<PathBuf, RetrieveDirError> {
-    use windows::Win32::UI::Shell::{FOLDERID_ProgramData, SHGetKnownFolderPath, KF_FLAG_CREATE};
+    use windows::Win32::UI::Shell::{FOLDERID_ProgramData, KF_FLAG_CREATE, SHGetKnownFolderPath};
     let path = unsafe {
         let path = SHGetKnownFolderPath(&FOLDERID_ProgramData, KF_FLAG_CREATE, None)?;
         path.to_string()?

@@ -33,7 +33,10 @@ pub async fn get_current_user_sid() -> IoResult<String> {
         "-Command",
         "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
     ];
-    const FALLBACK_POWERSHELL_ARGS: [&str; 2] = ["-Command", "Get-WmiObject Win32_UserAccount -Filter \"Name='$env:USERNAME'\" | Select-Object -ExpandProperty SID"];
+    const FALLBACK_POWERSHELL_ARGS: [&str; 2] = [
+        "-Command",
+        "Get-WmiObject Win32_UserAccount -Filter \"Name='$env:USERNAME'\" | Select-Object -ExpandProperty SID",
+    ];
 
     match execute_command(CMD_BINARY, &WMIC_ARGS).await {
         Ok(output_str) => {

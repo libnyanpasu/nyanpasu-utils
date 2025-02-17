@@ -1,6 +1,6 @@
 use crate::runtime::block_on;
 
-use super::{utils::spawn_pipe_reader, ClashCoreType, CommandEvent, CoreType, TerminatedPayload};
+use super::{ClashCoreType, CommandEvent, CoreType, TerminatedPayload, utils::spawn_pipe_reader};
 use crate::os::ChildExt;
 use os_pipe::pipe;
 use parking_lot::{Mutex, RwLock};
