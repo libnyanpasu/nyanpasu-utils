@@ -67,15 +67,16 @@ mod windows {
 mod unix {
     use nix::unistd::{Group, Uid, getgroups};
 
-    use std::process::Command;
-
     pub fn is_elevated() -> bool {
-        const ROOT_GROUPS: [&str; 3] = ["root", "wheel", "admin"];
+        const ROOT_GROUPS: [&str; 2] = ["root", "admin"];
         let uid = Uid::current();
         let groups = getgroups();
         uid.is_root()
-            || groups.iter().any(|g| {
-                Group::from_gid(*g).is_ok_and(|g| g.is_some_and(|g| ROOT_GROUPS.contains(&g)))
+            || groups.is_ok_and(|g| {
+                g.iter().any(|g| {
+                    Group::from_gid(*g)
+                        .is_ok_and(|g| g.is_some_and(|g| ROOT_GROUPS.contains(&g.name.as_str())))
+                })
             })
     }
 }
