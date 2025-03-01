@@ -65,19 +65,25 @@ mod windows {
 
 #[cfg(unix)]
 mod unix {
-    use nix::unistd::{Group, Uid, getgroups};
+    #[cfg(not(target_os = "macos"))]
+    use nix::unistd::getgroups;
+    use nix::unistd::{Group, Uid};
 
     pub fn is_elevated() -> bool {
         const ROOT_GROUPS: [&str; 2] = ["root", "admin"];
         let uid = Uid::current();
+        #[cfg(not(target_os = "macos"))]
         let groups = getgroups();
-        uid.is_root()
+        let is_root = uid.is_root();
+        #[cfg(not(target_os = "macos"))]
+        let is_root = is_root
             || groups.is_ok_and(|g| {
                 g.iter().any(|g| {
                     Group::from_gid(*g)
                         .is_ok_and(|g| g.is_some_and(|g| ROOT_GROUPS.contains(&g.name.as_str())))
                 })
-            })
+            });
+        is_root
     }
 }
 

@@ -12,7 +12,9 @@ use tokio::{process::Command as TokioCommand, sync::mpsc::Receiver};
 use tracing_attributes::instrument;
 
 // const DETACHED_PROCESS: u32 = 0x00000008;
+#[cfg(windows)]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 // TODO: migrate to https://github.com/tauri-apps/tauri-plugin-shell/blob/v2/src/commands.rs
