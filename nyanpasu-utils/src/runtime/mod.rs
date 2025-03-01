@@ -54,3 +54,18 @@ pub async fn run_until<F: Future>(task: F) -> F::Output {
     let local = tokio::task::LocalSet::new();
     local.run_until(task).await
 }
+
+/// check if the current thread is a tokio context
+pub fn is_tokio_context() -> bool {
+    tokio::runtime::Handle::try_current().is_ok()
+}
+
+/// block on a future, if the current thread is a tokio context, it will mark this thread as a blocking work thread, then block on the future.
+/// otherwise, it will block on the current thread directly.
+pub fn block_on_anywhere<F: Future>(task: F) -> F::Output {
+    if is_tokio_context() {
+        tokio::task::block_in_place(move || block_on(task))
+    } else {
+        block_on(task)
+    }
+}
