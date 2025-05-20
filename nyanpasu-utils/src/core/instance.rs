@@ -1,15 +1,17 @@
-use crate::runtime::block_on;
-
-use super::{ClashCoreType, CommandEvent, CoreType, TerminatedPayload, utils::spawn_pipe_reader};
-use crate::os::ChildExt;
+use camino::Utf8PathBuf;
 use os_pipe::pipe;
 use parking_lot::{Mutex, RwLock};
 use shared_child::SharedChild;
+use tokio::{process::Command as TokioCommand, sync::mpsc::Receiver};
+use tracing_attributes::instrument;
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::{ffi::OsStr, path::PathBuf, process::Command as StdCommand, sync::Arc, time::Duration};
-use tokio::{process::Command as TokioCommand, sync::mpsc::Receiver};
-use tracing_attributes::instrument;
+
+use super::{ClashCoreType, CommandEvent, CoreType, TerminatedPayload, utils::spawn_pipe_reader};
+use crate::os::ChildExt;
+use crate::runtime::block_on;
 
 // const DETACHED_PROCESS: u32 = 0x00000008;
 #[cfg(windows)]
@@ -23,11 +25,11 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[builder(build_fn(validate = "Self::validate"))]
 pub struct CoreInstance {
     pub core_type: CoreType,
-    pub binary_path: PathBuf,
-    pub app_dir: PathBuf,
-    pub config_path: PathBuf,
+    pub binary_path: Utf8PathBuf,
+    pub app_dir: Utf8PathBuf,
+    pub config_path: Utf8PathBuf,
     /// A pid hold the instance, should check it running or not while start instance
-    pid_path: PathBuf,
+    pid_path: Utf8PathBuf,
     #[builder(default = "self.default_instance()", setter(skip))]
     instance: Mutex<Option<Arc<SharedChild>>>,
     #[builder(default = "self.default_state()", setter(skip))]
@@ -103,8 +105,8 @@ pub enum CoreInstanceError {
 }
 
 impl CoreInstance {
-    pub fn set_config(&mut self, config: PathBuf) {
-        self.config_path = config;
+    pub fn set_config(&mut self, config: impl Into<Utf8PathBuf>) {
+        self.config_path = config.into();
     }
 
     pub fn state(&self) -> CoreInstanceState {
@@ -112,15 +114,19 @@ impl CoreInstance {
         state.clone()
     }
 
-    pub async fn check_config(&self, config: Option<PathBuf>) -> Result<(), CoreInstanceError> {
-        let config = config.as_ref().unwrap_or(&self.config_path).as_os_str();
+    pub async fn check_config<T: Into<Utf8PathBuf>>(
+        &self,
+        config: Option<T>,
+    ) -> Result<(), CoreInstanceError> {
+        let config = config.map(|c| c.into());
+        let config_ref = config.as_ref().unwrap_or(&self.config_path);
         let output = TokioCommand::new(&self.binary_path)
             .args(vec![
                 OsStr::new("-t"),
                 OsStr::new("-d"),
                 self.app_dir.as_os_str(),
                 OsStr::new("-f"),
-                config,
+                config_ref.as_os_str(),
             ])
             .output()
             .await?;
@@ -175,7 +181,7 @@ impl CoreInstance {
 
         let args = match self.core_type {
             CoreType::Clash(ref core_type) => {
-                core_type.get_run_args(&self.app_dir, &self.config_path)
+                core_type.get_run_args(self.app_dir.as_path(), self.config_path.as_path())
             }
             CoreType::SingBox => {
                 unimplemented!("SingBox is not supported yet")
@@ -186,9 +192,17 @@ impl CoreInstance {
         let (stderr_reader, stderr_writer) = pipe()?;
         // let (stdin_reader, stdin_writer) = pipe()?;
         let (tx, rx) = tokio::sync::mpsc::channel::<CommandEvent>(1);
+        let config_dir = self
+            .config_path
+            .parent()
+            .expect("config_path is not a file");
         let child = Arc::new({
             let mut command = StdCommand::new(&self.binary_path);
             command
+                .env(
+                    "SAFE_PATHS",
+                    [self.app_dir.as_str(), config_dir.as_str()].join(":"),
+                )
                 .args(args)
                 .stderr(stderr_writer)
                 .stdout(stdout_writer)

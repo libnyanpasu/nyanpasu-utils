@@ -1,7 +1,8 @@
+use camino::Utf8Path;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::{borrow::Cow, ffi::OsStr, path::Path};
+use std::{borrow::Cow, ffi::OsStr};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -38,13 +39,13 @@ impl std::fmt::Display for ClashCoreType {
 }
 
 impl ClashCoreType {
-    pub(super) fn get_run_args<'a, P: Into<Cow<'a, Path>>>(
+    pub(super) fn get_run_args<'a, P: Into<Cow<'a, Utf8Path>>>(
         &self,
         app_dir: P,
         config_path: P,
     ) -> Vec<Cow<'a, OsStr>> {
-        let app_dir: Cow<'a, Path> = app_dir.into();
-        let config_path: Cow<'a, Path> = config_path.into();
+        let app_dir: Cow<'a, Utf8Path> = app_dir.into();
+        let config_path: Cow<'a, Utf8Path> = config_path.into();
         let app_dir: Cow<'a, OsStr> = Cow::Owned(app_dir.as_ref().as_os_str().to_owned());
         let config_path: Cow<'a, OsStr> = Cow::Owned(config_path.as_ref().as_os_str().to_owned());
         match self {
