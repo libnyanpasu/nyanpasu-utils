@@ -19,6 +19,11 @@ const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+#[cfg(windows)]
+const MIHOMO_SAFE_PATHS_SEPARATOR: &str = ";";
+#[cfg(not(windows))]
+const MIHOMO_SAFE_PATHS_SEPARATOR: &str = ":";
+
 // TODO: migrate to https://github.com/tauri-apps/tauri-plugin-shell/blob/v2/src/commands.rs
 
 #[derive(Builder, Debug)]
@@ -201,7 +206,7 @@ impl CoreInstance {
             command
                 .env(
                     "SAFE_PATHS",
-                    [self.app_dir.as_str(), config_dir.as_str()].join(":"),
+                    [self.app_dir.as_str(), config_dir.as_str()].join(MIHOMO_SAFE_PATHS_SEPARATOR),
                 )
                 .args(args)
                 .stderr(stderr_writer)
