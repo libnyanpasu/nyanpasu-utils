@@ -15,4 +15,7 @@ pub mod dirs;
 pub mod os;
 
 #[cfg(feature = "network")]
-pub mod network {}
+#[allow(unused_imports)]
+pub mod network {
+    pub use network_utils::*;
+}
