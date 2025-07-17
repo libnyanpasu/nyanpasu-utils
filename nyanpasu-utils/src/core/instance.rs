@@ -1,4 +1,4 @@
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use os_pipe::pipe;
 use parking_lot::{Mutex, RwLock};
 use shared_child::SharedChild;
@@ -18,6 +18,9 @@ use crate::runtime::block_on;
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// The environment variable name for the safe paths, used by Mihomo
+pub const MIHOMO_SAFE_PATHS_ENV_NAME: &str = "SAFE_PATHS";
 
 #[cfg(windows)]
 const MIHOMO_SAFE_PATHS_SEPARATOR: &str = ";";
@@ -119,12 +122,27 @@ impl CoreInstance {
         state.clone()
     }
 
+    pub fn get_mihomo_safe_paths(
+        app_dir: &Utf8Path,
+        config_dir: &Utf8Path,
+        other_paths: Option<&[&Utf8Path]>,
+    ) -> String {
+        let mut paths = Vec::with_capacity(other_paths.map_or(0, |p| p.len()) + 2);
+        paths.push(app_dir.as_str());
+        paths.push(config_dir.as_str());
+        if let Some(other_paths) = other_paths {
+            paths.extend(other_paths.iter().map(|p| p.as_str()));
+        }
+        paths.join(MIHOMO_SAFE_PATHS_SEPARATOR)
+    }
+
     pub async fn check_config<T: Into<Utf8PathBuf>>(
         &self,
         config: Option<T>,
     ) -> Result<(), CoreInstanceError> {
         let config = config.map(|c| c.into());
         let config_ref = config.as_ref().unwrap_or(&self.config_path);
+        let config_dir = config_ref.parent().expect("config_path is not a file");
         let output = TokioCommand::new(&self.binary_path)
             .args(vec![
                 OsStr::new("-t"),
@@ -133,6 +151,10 @@ impl CoreInstance {
                 OsStr::new("-f"),
                 config_ref.as_os_str(),
             ])
+            .env(
+                MIHOMO_SAFE_PATHS_ENV_NAME,
+                Self::get_mihomo_safe_paths(&self.app_dir, config_dir, None),
+            )
             .output()
             .await?;
         if !output.status.success() {
@@ -205,8 +227,8 @@ impl CoreInstance {
             let mut command = StdCommand::new(&self.binary_path);
             command
                 .env(
-                    "SAFE_PATHS",
-                    [self.app_dir.as_str(), config_dir.as_str()].join(MIHOMO_SAFE_PATHS_SEPARATOR),
+                    MIHOMO_SAFE_PATHS_ENV_NAME,
+                    Self::get_mihomo_safe_paths(&self.app_dir, config_dir, None),
                 )
                 .args(args)
                 .stderr(stderr_writer)
