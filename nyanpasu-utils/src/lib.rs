@@ -15,6 +15,4 @@ pub mod dirs;
 pub mod os;
 
 #[cfg(feature = "network")]
-pub mod network {
-    
-}
+pub mod network {}

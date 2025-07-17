@@ -7,16 +7,14 @@ async fn execute_command(command: &str, args: &[&str]) -> IoResult<String> {
         .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
         .output()
         .await
-        .map_err(|e| {
-            IoError::other(
-                format!("Failed to execute command: {e}"),
-            )
-        })?;
+        .map_err(|e| IoError::other(format!("Failed to execute command: {e}")))?;
 
     if !output.status.success() {
-        return Err(IoError::other(
-            format!("Command execution failed: '{} {}'", command, args.join(" ")),
-        ));
+        return Err(IoError::other(format!(
+            "Command execution failed: '{} {}'",
+            command,
+            args.join(" ")
+        )));
     }
 
     let output_str = String::from_utf8_lossy(&output.stdout);

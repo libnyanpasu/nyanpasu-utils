@@ -11,9 +11,7 @@ fn gracefully_kill(pid: u32) -> std::io::Result<()> {
     use windows::Win32::System::Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent};
     unsafe {
         GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid).map_err(|e| {
-            std::io::Error::other(
-                format!("GenerateConsoleCtrlEvent failed: {e:?}"),
-            )
+            std::io::Error::other(format!("GenerateConsoleCtrlEvent failed: {e:?}"))
         })?;
     }
     Ok(())

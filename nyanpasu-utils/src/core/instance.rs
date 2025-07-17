@@ -377,8 +377,9 @@ impl Drop for CoreInstance {
     fn drop(&mut self) {
         let mut instance = self.instance.lock();
         if let Some(instance) = instance.take()
-            && let Err(err) = instance.kill() {
-                tracing::error!("Failed to kill instance: {:?}", err);
-            }
+            && let Err(err) = instance.kill()
+        {
+            tracing::error!("Failed to kill instance: {:?}", err);
+        }
     }
 }
