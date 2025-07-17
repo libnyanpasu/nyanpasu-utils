@@ -5,6 +5,7 @@ use shared_child::SharedChild;
 use tokio::{process::Command as TokioCommand, sync::mpsc::Receiver};
 use tracing_attributes::instrument;
 
+use std::borrow::Cow;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::{ffi::OsStr, process::Command as StdCommand, sync::Arc, time::Duration};
@@ -140,25 +141,38 @@ impl CoreInstance {
         &self,
         config: Option<T>,
     ) -> Result<(), CoreInstanceError> {
-        let config = config.map(|c| c.into());
-        let config_ref = config.as_ref().unwrap_or(&self.config_path);
-        let config_dir = config_ref.parent().expect("config_path is not a file");
-        let output = TokioCommand::new(&self.binary_path)
+        let config: Cow<'_, Utf8PathBuf> = config
+            .map(|c| Cow::Owned(c.into()))
+            .unwrap_or(Cow::Borrowed(&self.config_path));
+
+        Self::check_config_(&self.core_type, &config, &self.binary_path, &self.app_dir).await?;
+
+        Ok(())
+    }
+
+    pub async fn check_config_(
+        core_type: &CoreType,
+        config_path: &Utf8Path,
+        binary_path: &Utf8Path,
+        app_dir: &Utf8Path,
+    ) -> Result<(), CoreInstanceError> {
+        let config_dir = config_path.parent().expect("config_path is not a file");
+        let output = TokioCommand::new(binary_path)
             .args(vec![
                 OsStr::new("-t"),
                 OsStr::new("-d"),
-                self.app_dir.as_os_str(),
+                app_dir.as_os_str(),
                 OsStr::new("-f"),
-                config_ref.as_os_str(),
+                config_path.as_os_str(),
             ])
             .env(
                 MIHOMO_SAFE_PATHS_ENV_NAME,
-                Self::get_mihomo_safe_paths(&self.app_dir, config_dir, None),
+                Self::get_mihomo_safe_paths(app_dir, config_dir, None),
             )
             .output()
             .await?;
         if !output.status.success() {
-            let error = if !matches!(self.core_type, CoreType::Clash(ClashCoreType::ClashRust)) {
+            let error = if !matches!(core_type, CoreType::Clash(ClashCoreType::ClashRust)) {
                 super::utils::parse_check_output(
                     String::from_utf8_lossy(&output.stdout).to_string(),
                 )
