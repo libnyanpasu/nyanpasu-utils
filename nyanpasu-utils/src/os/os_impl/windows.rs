@@ -8,15 +8,13 @@ async fn execute_command(command: &str, args: &[&str]) -> IoResult<String> {
         .output()
         .await
         .map_err(|e| {
-            IoError::new(
-                IoErrorKind::Other,
-                format!("Failed to execute command: {}", e),
+            IoError::other(
+                format!("Failed to execute command: {e}"),
             )
         })?;
 
     if !output.status.success() {
-        return Err(IoError::new(
-            IoErrorKind::Other,
+        return Err(IoError::other(
             format!("Command execution failed: '{} {}'", command, args.join(" ")),
         ));
     }
@@ -42,7 +40,7 @@ pub async fn get_current_user_sid() -> IoResult<String> {
         Ok(output_str) => {
             let lines: Vec<&str> = output_str.lines().collect();
             if lines.len() < 2 {
-                return Err(IoError::new(IoErrorKind::Other, "Unexpected output format"));
+                return Err(IoError::other("Unexpected output format"));
             }
             Ok(lines[1].trim().to_string())
         }

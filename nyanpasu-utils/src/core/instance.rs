@@ -7,7 +7,7 @@ use tracing_attributes::instrument;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-use std::{ffi::OsStr, path::PathBuf, process::Command as StdCommand, sync::Arc, time::Duration};
+use std::{ffi::OsStr, process::Command as StdCommand, sync::Arc, time::Duration};
 
 use super::{ClashCoreType, CommandEvent, CoreType, TerminatedPayload, utils::spawn_pipe_reader};
 use crate::os::ChildExt;
@@ -63,7 +63,7 @@ impl CoreInstanceBuilder {
     fn validate(&self) -> Result<(), String> {
         match self.binary_path {
             Some(ref path) if !path.exists() && path.is_dir() => {
-                return Err(format!("binary_path {:?} does not exist", path));
+                return Err(format!("binary_path {path:?} does not exist"));
             }
             None => {
                 return Err("binary_path is required".into());
@@ -73,7 +73,7 @@ impl CoreInstanceBuilder {
 
         match self.app_dir {
             Some(ref path) if !path.exists() && path.is_dir() => {
-                return Err(format!("app_dir {:?} does not exist", path));
+                return Err(format!("app_dir {path:?} does not exist"));
             }
             None => {
                 return Err("app_dir is required".into());
@@ -83,7 +83,7 @@ impl CoreInstanceBuilder {
 
         match self.config_path {
             Some(ref path) if !path.exists() && path.is_file() => {
-                return Err(format!("config_path {:?} does not exist", path));
+                return Err(format!("config_path {path:?} does not exist"));
             }
             None => {
                 return Err("config_path is required".into());
@@ -354,8 +354,7 @@ impl CoreInstance {
                 }
                 break;
             } else if i == 29 {
-                return Err(CoreInstanceError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Err(CoreInstanceError::Io(std::io::Error::other(
                     "Failed to kill instance: force kill timeout",
                 )));
             }
@@ -377,10 +376,9 @@ impl CoreInstance {
 impl Drop for CoreInstance {
     fn drop(&mut self) {
         let mut instance = self.instance.lock();
-        if let Some(instance) = instance.take() {
-            if let Err(err) = instance.kill() {
+        if let Some(instance) = instance.take()
+            && let Err(err) = instance.kill() {
                 tracing::error!("Failed to kill instance: {:?}", err);
             }
-        }
     }
 }

@@ -72,7 +72,7 @@ pub async fn kill_pid<Name: AsRef<str> + Debug>(
         tracing::debug!("pid exists, kill it");
         let list = kill_tree::tokio::kill_tree(pid)
             .await
-            .map_err(|e| IoError::new(std::io::ErrorKind::Other, format!("kill error: {:?}", e)))?;
+            .map_err(|e| IoError::other(format!("kill error: {e:?}")))?;
         for p in list {
             if matches!(p, kill_tree::Output::Killed { .. }) {
                 tracing::info!("process is killed: {:?}", p);
