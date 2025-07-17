@@ -62,11 +62,11 @@ mod tests {
     async fn test_get_current_user_sid() {
         match get_current_user_sid().await {
             Ok(sid) => {
-                println!("[{}]", sid);
+                println!("[{sid}]");
                 assert!(!sid.is_empty(), "SID should not be empty");
             }
             Err(e) => {
-                panic!("Failed to get current user SID: {}", e);
+                panic!("Failed to get current user SID: {e}");
             }
         }
     }
