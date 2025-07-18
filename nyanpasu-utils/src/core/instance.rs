@@ -157,20 +157,21 @@ impl CoreInstance {
         app_dir: &Utf8Path,
     ) -> Result<(), CoreInstanceError> {
         let config_dir = config_path.parent().expect("config_path is not a file");
-        let output = TokioCommand::new(binary_path)
-            .args(vec![
-                OsStr::new("-t"),
-                OsStr::new("-d"),
-                app_dir.as_os_str(),
-                OsStr::new("-f"),
-                config_path.as_os_str(),
-            ])
-            .env(
-                MIHOMO_SAFE_PATHS_ENV_NAME,
-                Self::get_mihomo_safe_paths(app_dir, config_dir, None),
-            )
-            .output()
-            .await?;
+        let mut cmd = TokioCommand::new(binary_path);
+        cmd.args(vec![
+            OsStr::new("-t"),
+            OsStr::new("-d"),
+            app_dir.as_os_str(),
+            OsStr::new("-f"),
+            config_path.as_os_str(),
+        ])
+        .env(
+            MIHOMO_SAFE_PATHS_ENV_NAME,
+            Self::get_mihomo_safe_paths(app_dir, config_dir, None),
+        );
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let output = cmd.output().await?;
         if !output.status.success() {
             let error = if !matches!(core_type, CoreType::Clash(ClashCoreType::ClashRust)) {
                 super::utils::parse_check_output(
