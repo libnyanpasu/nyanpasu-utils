@@ -64,7 +64,7 @@ pub fn is_tokio_context() -> bool {
 /// otherwise, it will block on the current thread directly.
 pub fn block_on_anywhere<F: Future>(task: F) -> F::Output {
     if is_tokio_context() {
-        tokio::task::block_in_place(move || block_on(task))
+        tokio::task::block_in_place(|| block_on(task))
     } else {
         block_on(task)
     }
