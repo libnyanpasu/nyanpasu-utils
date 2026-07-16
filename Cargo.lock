@@ -273,16 +273,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dirs-utils"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "thiserror",
- "tracing",
- "windows 0.62.2",
-]
-
-[[package]]
 name = "dispatch2"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -563,15 +553,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "network-utils"
-version = "0.1.0"
-dependencies = [
- "log",
- "tempfile",
- "test-log",
-]
-
-[[package]]
 name = "nix"
 version = "0.27.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -629,22 +610,25 @@ dependencies = [
  "camino",
  "constcat",
  "derive_builder",
- "dirs-utils",
+ "dirs",
  "encoding_rs",
  "kill_tree",
+ "log",
  "memchr",
- "network-utils",
- "os-utils",
+ "nix 0.31.3",
  "os_pipe",
  "parking_lot",
  "serde",
  "shared_child",
  "specta",
  "sysinfo",
+ "tempfile",
+ "test-log",
  "thiserror",
  "tokio",
  "tracing",
  "tracing-attributes",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -730,15 +714,6 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
-
-[[package]]
-name = "os-utils"
-version = "0.1.0"
-dependencies = [
- "nix 0.31.3",
- "shared_child",
- "windows 0.62.2",
-]
 
 [[package]]
 name = "os_pipe"

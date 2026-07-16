@@ -1,22 +1,65 @@
-[workspace]
-resolver = "2"
-members = [ "dirs-utils", "network-utils","nyanpasu-utils", "os-utils"]
-
-[workspace.package]
+[package]
+name = "nyanpasu-utils"
+version = "0.1.0"
+description = "Shared utilities for Nyanpasu applications and services."
 edition = "2024"
 license = "GPL-3.0"
 authors = ["LibNyanpasu"]
 repository = "https://github.com/LibNyanpasu/nyanpasu-utils"
 
-[workspace.dependencies]
-thiserror = "2"
-log = "0.4"
+[features]
+default = ["core_manager", "dirs", "serde", "network"]
+core_manager = [
+    "os",
+    "dep:derive_builder",
+    "dep:os_pipe",
+    "dep:encoding_rs",
+    "dep:camino",
+]
+dirs = ["dep:dirs", "dep:windows"]
+network = ["dep:log", "dep:tempfile"]
+serde = ["dep:serde"]
+os = [
+    "dep:kill_tree",
+    "dep:nix",
+    "dep:shared_child",
+    "dep:sysinfo",
+    "dep:windows",
+]
+deadlock_detection = ["parking_lot/deadlock_detection"]
+specta = ["dep:specta"]
+
+[dependencies]
+camino = { version = "1.1", features = ["serde1"], optional = true }
+constcat = "0.6.0"
+derive_builder = { version = "0.20", optional = true }
+dirs = { version = "6", optional = true }
+encoding_rs = { version = "0.8", optional = true }
+kill_tree = { version = "0.2.4", features = ["tokio"], optional = true }
+log = { version = "0.4", optional = true }
+memchr = "2.7"
+os_pipe = { version = "1.2.0", optional = true }
 parking_lot = "0.12.3"
-simd-json = "0.17"
+serde = { version = "1", features = ["derive"], optional = true }
+shared_child = { version = "1", optional = true }
+specta = { version = "^2.0.0-rc.22", features = ["derive"], optional = true }
+sysinfo = { version = "0.39", optional = true }
+tempfile = { version = "3", optional = true }
+thiserror = "2"
 tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7" }
-serde = { version = "1.0", features = ["derive"] }
 tracing = "0.1"
 tracing-attributes = "0.1"
-futures = "0.3.30"
-futures-util = "0.3"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.0", features = ["signal", "process", "user"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+], optional = true }
+
+[dev-dependencies]
+test-log = "0.2"
