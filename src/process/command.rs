@@ -6,10 +6,6 @@ use std::{
 
 /// Builder for spawning a managed child process. See module docs for the contract.
 pub struct Command {
-    #[expect(
-        dead_code,
-        reason = "fields are read by process::engine starting with Task 5"
-    )]
     pub(crate) program: OsString,
     pub(crate) args: Vec<OsString>,
     pub(crate) envs: Vec<(OsString, OsString)>,
@@ -99,6 +95,26 @@ impl Command {
     pub fn pid_file(mut self, path: impl Into<PathBuf>) -> Self {
         self.pid_file = Some(path.into());
         self
+    }
+
+    /// Spawns the child. `ProcessEvent::Terminated` is the final event.
+    pub async fn spawn(
+        self,
+    ) -> Result<
+        (
+            super::handle::ProcessHandle,
+            tokio::sync::mpsc::Receiver<super::event::ProcessEvent>,
+        ),
+        super::error::ProcessError,
+    > {
+        let parts = super::engine::spawn(self).await?;
+        let handle = super::handle::ProcessHandle {
+            pid: parts.pid,
+            containment: parts.containment,
+            ctrl: parts.ctrl_tx,
+            terminated: parts.terminated_rx,
+        };
+        Ok((handle, parts.events_rx))
     }
 }
 

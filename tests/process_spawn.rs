@@ -1,0 +1,103 @@
+#![cfg(feature = "process")]
+
+use nyanpasu_utils::process::{Command, ProcessEvent};
+
+fn child() -> &'static str {
+    env!("CARGO_BIN_EXE_nyanpasu-test-child")
+}
+
+async fn collect_all(mut rx: tokio::sync::mpsc::Receiver<ProcessEvent>) -> Vec<ProcessEvent> {
+    let mut evs = Vec::new();
+    while let Some(e) = rx.recv().await {
+        evs.push(e);
+    }
+    evs
+}
+
+#[tokio::test]
+async fn stdout_stderr_then_terminated_last() {
+    let (handle, rx) = Command::new(child())
+        .args(["echo-lines", "hello", "world"])
+        .spawn()
+        .await
+        .unwrap();
+    assert!(handle.pid() > 0);
+    let evs = collect_all(rx).await;
+
+    let stdout: Vec<_> = evs
+        .iter()
+        .filter_map(|e| match e {
+            ProcessEvent::Stdout(l) => Some(l.trim_end().to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(stdout, vec!["hello", "world"]);
+    assert!(
+        evs.iter()
+            .any(|e| matches!(e, ProcessEvent::Stderr(l) if l.contains("stderr-marker")))
+    );
+    // contract: Terminated is the FINAL event
+    assert!(matches!(evs.last().unwrap(), ProcessEvent::Terminated(p) if p.code == Some(0)));
+    let payload = handle.wait().await.unwrap();
+    assert_eq!(payload.code, Some(0));
+}
+
+#[tokio::test]
+async fn nonzero_exit_code_is_reported() {
+    let (handle, rx) = Command::new(child())
+        .args(["exit-with", "3"])
+        .spawn()
+        .await
+        .unwrap();
+    let evs = collect_all(rx).await;
+    assert!(matches!(evs.last().unwrap(), ProcessEvent::Terminated(p) if p.code == Some(3)));
+    assert_eq!(handle.wait().await.unwrap().code, Some(3));
+}
+
+#[tokio::test]
+async fn spam_10k_lines_no_loss_with_default_capacity() {
+    let (_handle, rx) = Command::new(child())
+        .args(["spam-stdout", "10000"])
+        .spawn()
+        .await
+        .unwrap();
+    let evs = collect_all(rx).await;
+    let n = evs
+        .iter()
+        .filter(|e| matches!(e, ProcessEvent::Stdout(_)))
+        .count();
+    assert_eq!(n, 10000);
+    assert!(matches!(evs.last().unwrap(), ProcessEvent::Terminated(_)));
+}
+
+#[tokio::test]
+async fn spawn_missing_program_is_error() {
+    let err = Command::new("definitely-not-a-real-binary-42")
+        .spawn()
+        .await
+        .err()
+        .unwrap();
+    let msg = err.to_string();
+    assert!(!msg.is_empty());
+}
+
+#[tokio::test]
+async fn containment_matches_platform() {
+    use nyanpasu_utils::process::Containment;
+    let (handle, rx) = Command::new(child())
+        .args(["exit-with", "0"])
+        .spawn()
+        .await
+        .unwrap();
+    let c = handle.containment();
+    #[cfg(windows)]
+    assert_eq!(c, Containment::JobObject);
+    #[cfg(target_os = "linux")]
+    assert!(matches!(
+        c,
+        Containment::CgroupV2 | Containment::ProcessGroup
+    ));
+    #[cfg(all(unix, not(target_os = "linux")))]
+    assert_eq!(c, Containment::ProcessGroup);
+    collect_all(rx).await;
+}
