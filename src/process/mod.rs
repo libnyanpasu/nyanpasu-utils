@@ -8,8 +8,10 @@ mod error;
 mod event;
 mod handle;
 mod pid_file;
+mod supervisor;
 
 pub use command::Command;
 pub use error::{ProcessError, ProcessOutput};
 pub use event::{ProcessEvent, TerminatedPayload};
 pub use handle::{Containment, ProcessHandle};
+pub use supervisor::{Backoff, ReadinessProbe, RestartPolicy, SupervisorEvent};
