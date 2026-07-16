@@ -52,10 +52,18 @@ impl ProcessHandle {
         }
     }
 
-    #[expect(
-        dead_code,
-        reason = "public control methods use this helper starting with Task 6"
-    )]
+    pub async fn graceful_kill(&self) -> Result<(), ProcessError> {
+        self.send_ctrl(Ctrl::GracefulKill).await?;
+        self.wait().await?;
+        Ok(())
+    }
+
+    pub async fn kill(&self) -> Result<(), ProcessError> {
+        self.send_ctrl(Ctrl::Kill).await?;
+        self.wait().await?;
+        Ok(())
+    }
+
     pub(crate) async fn send_ctrl(
         &self,
         make: impl FnOnce(oneshot::Sender<Result<(), ProcessError>>) -> Ctrl,
