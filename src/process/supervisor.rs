@@ -97,6 +97,12 @@ pub struct SupervisorBuilder {
     cancel_token: Option<CancellationToken>,
 }
 
+/// Handle to a running supervision loop.
+///
+/// Call [`Supervisor::stop`] for the intended lifecycle end. Dropping a
+/// `Supervisor` without calling `stop` detaches the supervision loop: it keeps
+/// running and restarting according to its policy with no remaining
+/// `Supervisor` handle available to stop it.
 pub struct Supervisor {
     token: CancellationToken,
     current: Arc<tokio::sync::Mutex<Option<ProcessHandle>>>,
@@ -149,11 +155,21 @@ impl SupervisorBuilder {
         self
     }
 
+    /// Registers a supervisor-event hook.
+    ///
+    /// The hook runs inline on the supervision loop, so it must be cheap and
+    /// non-blocking. A slow hook stalls event draining and delays reacting to
+    /// cancellation.
     pub fn on_event(mut self, hook: impl Fn(SupervisorEvent) + Send + Sync + 'static) -> Self {
         self.on_event = Some(Arc::new(hook));
         self
     }
 
+    /// Registers a child-process-event hook.
+    ///
+    /// The hook runs inline on the supervision loop, so it must be cheap and
+    /// non-blocking. A slow hook stalls event draining and delays reacting to
+    /// cancellation.
     pub fn on_process_event(mut self, hook: impl Fn(ProcessEvent) + Send + Sync + 'static) -> Self {
         self.on_process_event = Some(Arc::new(hook));
         self

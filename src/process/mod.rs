@@ -1,5 +1,35 @@
 //! Generic child-process management: spawn, event stream, kill, supervise.
 //!
+//! `processkit` is the internal engine and must not appear in any public signature
+//! (only `engine.rs` may import it). Event contract: [`ProcessEvent::Terminated`]
+//! is always the final event on the channel.
+//!
+//! ```no_run
+//! use nyanpasu_utils::process::{Command, ProcessEvent};
+//!
+//! # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
+//! let (handle, mut events) = Command::new("mihomo")
+//!     .args(["-d", "/etc/mihomo"])
+//!     .pid_file("/run/mihomo.pid")
+//!     .spawn()
+//!     .await?;
+//! while let Some(event) = events.recv().await {
+//!     match event {
+//!         ProcessEvent::Stdout(line) => eprintln!("stdout: {line}"),
+//!         ProcessEvent::Stderr(line) => eprintln!("stderr: {line}"),
+//!         ProcessEvent::Error(error) => eprintln!("pump: {error}"),
+//!         ProcessEvent::Terminated(payload) => {
+//!             eprintln!("exited: {payload:?}");
+//!             break;
+//!         }
+//!         _ => {}
+//!     }
+//! }
+//! handle.graceful_kill().await.ok();
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! Design: docs/superpowers/specs/2026-07-16-nyanpasu-utils-process-module-design.md
 
 mod command;
