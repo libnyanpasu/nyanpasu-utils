@@ -80,3 +80,19 @@ async fn write_stdin_does_not_stall_output_pump() {
         .expect("stdin write never resolved")
         .unwrap();
 }
+
+#[tokio::test]
+async fn write_stdin_after_termination_is_unavailable() {
+    let (handle, _rx) = Command::new(child())
+        .args(["exit-with", "0"])
+        .pipe_stdin(true)
+        .spawn()
+        .await
+        .unwrap();
+
+    handle.wait().await.unwrap();
+    assert!(matches!(
+        handle.write_stdin(b"too late").await,
+        Err(ProcessError::StdinUnavailable)
+    ));
+}

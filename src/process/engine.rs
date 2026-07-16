@@ -17,7 +17,7 @@ pub(crate) struct SpawnParts {
     pub pid: u32,
     pub containment: Containment,
     pub ctrl_tx: mpsc::Sender<Ctrl>,
-    pub terminated_rx: watch::Receiver<Option<TerminatedPayload>>,
+    pub terminated_rx: watch::Receiver<Option<Result<TerminatedPayload, String>>>,
     pub events_rx: mpsc::Receiver<ProcessEvent>,
 }
 
@@ -25,15 +25,16 @@ struct PumpParts {
     run: processkit::RunningProcess,
     events: processkit::OutputEvents,
     group: Arc<processkit::ProcessGroup>,
-    stdin_tx: Option<mpsc::UnboundedSender<StdinWrite>>,
+    stdin_tx: Option<mpsc::Sender<StdinWrite>>,
     kill_grace: Duration,
+    timeout_at: Option<tokio::time::Instant>,
     ev_tx: mpsc::Sender<ProcessEvent>,
     ctrl_rx: mpsc::Receiver<Ctrl>,
-    term_tx: watch::Sender<Option<TerminatedPayload>>,
+    term_tx: watch::Sender<Option<Result<TerminatedPayload, String>>>,
     pid_guard: Option<PidFileGuard>,
 }
 
-fn build_pk(cmd: &Command) -> processkit::Command {
+fn build_pk(cmd: &Command, include_timeout: bool) -> processkit::Command {
     let mut pk = processkit::Command::new(&cmd.program).args(&cmd.args);
     for (key, value) in &cmd.envs {
         pk = pk.env(key, value);
@@ -44,7 +45,7 @@ fn build_pk(cmd: &Command) -> processkit::Command {
     if let Some(encoding) = cmd.encoding {
         pk = pk.encoding(encoding);
     }
-    if let Some(timeout) = cmd.timeout {
+    if include_timeout && let Some(timeout) = cmd.timeout {
         pk = pk.timeout(timeout);
     }
     #[cfg(windows)]
@@ -61,12 +62,17 @@ fn build_pk(cmd: &Command) -> processkit::Command {
 pub(crate) async fn run_capture(cmd: Command) -> Result<super::error::ProcessOutput, ProcessError> {
     let program = cmd.program.to_string_lossy().into_owned();
     let timeout = cmd.timeout;
-    let result = build_pk(&cmd)
+    let result = build_pk(&cmd, true)
         .output_string()
         .await
-        .map_err(|error| ProcessError::Spawn {
-            program,
-            message: error.to_string(),
+        .map_err(|error| match error {
+            processkit::Error::Spawn { .. } | processkit::Error::NotFound { .. } => {
+                ProcessError::Spawn {
+                    program,
+                    message: error.to_string(),
+                }
+            }
+            error => ProcessError::Engine(error.to_string()),
         })?;
 
     if result.timed_out() {
@@ -107,9 +113,11 @@ async fn hard_kill_deadline(deadline: Option<tokio::time::Instant>) {
 
 type StdinWrite = (Vec<u8>, oneshot::Sender<Result<(), ProcessError>>);
 
+const DYING_EVENT_STALL: Duration = Duration::from_secs(5);
+
 async fn write_stdin(
     mut stdin: processkit::ProcessStdin,
-    mut requests: mpsc::UnboundedReceiver<StdinWrite>,
+    mut requests: mpsc::Receiver<StdinWrite>,
 ) {
     while let Some((data, reply)) = requests.recv().await {
         if stdin.write(&data).await.is_err() || stdin.flush().await.is_err() {
@@ -128,10 +136,10 @@ async fn write_stdin(
 fn handle_ctrl(
     ctrl: Ctrl,
     group: &processkit::ProcessGroup,
-    stdin_tx: &Option<mpsc::UnboundedSender<StdinWrite>>,
+    stdin_tx: &Option<mpsc::Sender<StdinWrite>>,
     kill_grace: Duration,
     hard_kill_at: &mut Option<tokio::time::Instant>,
-) {
+) -> bool {
     match ctrl {
         Ctrl::Kill(reply) => {
             *hard_kill_at = None;
@@ -139,16 +147,22 @@ fn handle_ctrl(
                 .kill_all()
                 .map_err(|error| ProcessError::Engine(error.to_string()));
             let _ = reply.send(result);
+            true
         }
         Ctrl::GracefulKill(reply) => {
             #[cfg(unix)]
-            let result = group
-                .signal(processkit::Signal::Term)
-                .map_err(|error| ProcessError::Engine(error.to_string()));
-            #[cfg(unix)]
-            if result.is_ok() {
-                *hard_kill_at = Some(tokio::time::Instant::now() + kill_grace);
-            }
+            let result = match group.signal(processkit::Signal::Term) {
+                Ok(()) => {
+                    let grace_deadline = tokio::time::Instant::now() + kill_grace;
+                    if hard_kill_at.is_none_or(|deadline| grace_deadline < deadline) {
+                        *hard_kill_at = Some(grace_deadline);
+                    }
+                    Ok(())
+                }
+                Err(_) => group
+                    .kill_all()
+                    .map_err(|error| ProcessError::Engine(error.to_string())),
+            };
 
             #[cfg(windows)]
             let result = {
@@ -160,16 +174,18 @@ fn handle_ctrl(
             };
 
             let _ = reply.send(result);
+            true
         }
         Ctrl::WriteStdin(data, reply) => {
             if let Some(stdin_tx) = stdin_tx {
-                if let Err(error) = stdin_tx.send((data, reply)) {
-                    let (_, reply) = error.0;
+                if let Err(error) = stdin_tx.try_send((data, reply)) {
+                    let (_, reply) = error.into_inner();
                     let _ = reply.send(Err(ProcessError::StdinUnavailable));
                 }
             } else {
                 let _ = reply.send(Err(ProcessError::StdinUnavailable));
             }
+            false
         }
     }
 }
@@ -179,6 +195,7 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
     let capacity = cmd.event_channel_capacity;
     let kill_grace = cmd.kill_grace;
     let pipe_stdin = cmd.pipe_stdin;
+    let timeout = cmd.timeout;
     let pid_guard = match &cmd.pid_file {
         Some(path) => {
             let expected_exe = std::path::Path::new(&cmd.program)
@@ -188,7 +205,10 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
         }
         None => None,
     };
-    let pk = build_pk(&cmd);
+    // A shared-group RunningProcess only times out its direct child. The pump
+    // owns the shared group deadline so descendants holding inherited pipes are
+    // killed as well.
+    let pk = build_pk(&cmd, false);
 
     let spawn_error = |error: processkit::Error| ProcessError::Spawn {
         program: program.clone(),
@@ -197,6 +217,7 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
     let group = Arc::new(processkit::ProcessGroup::new().map_err(&spawn_error)?);
     let containment = map_containment(group.mechanism());
     let mut run = group.start(&pk).await.map_err(spawn_error)?;
+    let timeout_at = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
     let pid = run
         .pid()
         .ok_or_else(|| ProcessError::Engine("spawned process has no pid".into()))?;
@@ -207,7 +228,7 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
     }
     let stdin_tx = if pipe_stdin {
         run.take_stdin().map(|stdin| {
-            let (stdin_tx, stdin_rx) = mpsc::unbounded_channel();
+            let (stdin_tx, stdin_rx) = mpsc::channel(64);
             tokio::spawn(write_stdin(stdin, stdin_rx));
             stdin_tx
         })
@@ -228,6 +249,7 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
         group,
         stdin_tx,
         kill_grace,
+        timeout_at,
         ev_tx,
         ctrl_rx,
         term_tx,
@@ -250,6 +272,7 @@ async fn pump(parts: PumpParts) {
         group,
         stdin_tx,
         kill_grace,
+        timeout_at,
         ev_tx,
         mut ctrl_rx,
         term_tx,
@@ -257,52 +280,93 @@ async fn pump(parts: PumpParts) {
     } = parts;
     let mut run = Some(run);
     let mut pending_event = None;
-    let mut hard_kill_at = None;
+    let mut hard_kill_at = timeout_at;
     let mut events_open = true;
     let mut ctrl_open = true;
+    let mut dying = false;
+    let mut drop_output = false;
+    let mut drop_pending_at = None;
+    let mut dropped_output_events = 0usize;
+    let mut abandoned = false;
 
     loop {
-        if !events_open && !ctrl_open {
+        if !events_open && !ctrl_open && !abandoned {
+            abandoned = true;
+            dying = true;
+            hard_kill_at = None;
             let _ = group.kill_all();
-            cleanup_pid_file(&pid_guard).await;
-            return;
         }
 
         tokio::select! {
             biased;
             ctrl = ctrl_rx.recv(), if ctrl_open => match ctrl {
                 Some(ctrl) => {
-                    handle_ctrl(
+                    if handle_ctrl(
                         ctrl,
                         &group,
                         &stdin_tx,
                         kill_grace,
                         &mut hard_kill_at,
-                    );
+                    ) {
+                        dying = true;
+                        if pending_event.is_some() && drop_pending_at.is_none() {
+                            drop_pending_at = Some(tokio::time::Instant::now() + DYING_EVENT_STALL);
+                        }
+                    }
                 }
                 None => ctrl_open = false,
             },
             _ = hard_kill_deadline(hard_kill_at) => {
                 hard_kill_at = None;
+                dying = true;
                 let _ = group.kill_all();
+                if pending_event.is_some() && drop_pending_at.is_none() {
+                    drop_pending_at = Some(tokio::time::Instant::now() + DYING_EVENT_STALL);
+                }
             }
-            permit = ev_tx.reserve(), if events_open && pending_event.is_some() => match permit {
-                Ok(permit) => permit.send(pending_event.take().expect("pending event")),
+            _ = hard_kill_deadline(drop_pending_at), if dying && !drop_output && pending_event.is_some() => {
+                drop_pending_at = None;
+                if pending_event.take().is_some() {
+                    dropped_output_events += 1;
+                }
+                drop_output = true;
+            }
+            permit = ev_tx.reserve(), if events_open && pending_event.is_some() && !drop_output => match permit {
+                Ok(permit) => {
+                    permit.send(pending_event.take().expect("pending event"));
+                    drop_pending_at = None;
+                }
                 Err(_) => {
                     events_open = false;
                     pending_event = None;
+                    drop_pending_at = None;
                 }
             },
             _ = ev_tx.closed(), if events_open => {
                 events_open = false;
                 pending_event = None;
+                drop_pending_at = None;
             }
             event = events.next(), if pending_event.is_none() => match event {
-                Some(processkit::OutputEvent::Stdout(line)) if events_open => {
-                    pending_event = Some(ProcessEvent::Stdout(line.into_text()));
+                Some(processkit::OutputEvent::Stdout(line)) => {
+                    if drop_output {
+                        dropped_output_events += 1;
+                    } else if events_open {
+                        pending_event = Some(ProcessEvent::Stdout(line.into_text()));
+                        if dying {
+                            drop_pending_at = Some(tokio::time::Instant::now() + DYING_EVENT_STALL);
+                        }
+                    }
                 }
-                Some(processkit::OutputEvent::Stderr(line)) if events_open => {
-                    pending_event = Some(ProcessEvent::Stderr(line.into_text()));
+                Some(processkit::OutputEvent::Stderr(line)) => {
+                    if drop_output {
+                        dropped_output_events += 1;
+                    } else if events_open {
+                        pending_event = Some(ProcessEvent::Stderr(line.into_text()));
+                        if dying {
+                            drop_pending_at = Some(tokio::time::Instant::now() + DYING_EVENT_STALL);
+                        }
+                    }
                 }
                 Some(_) => {}
                 None => break,
@@ -313,17 +377,17 @@ async fn pump(parts: PumpParts) {
     drop(events);
     let mut finish = Box::pin(run.take().expect("running process").finish());
     let finished = loop {
-        if !events_open && !ctrl_open {
+        if !events_open && !ctrl_open && !abandoned {
+            abandoned = true;
+            hard_kill_at = None;
             let _ = group.kill_all();
-            cleanup_pid_file(&pid_guard).await;
-            return;
         }
 
         tokio::select! {
             biased;
             ctrl = ctrl_rx.recv(), if ctrl_open => match ctrl {
                 Some(ctrl) => {
-                    handle_ctrl(
+                    let _ = handle_ctrl(
                         ctrl,
                         &group,
                         &stdin_tx,
@@ -352,9 +416,19 @@ async fn pump(parts: PumpParts) {
             Some(error.to_string()),
         ),
     };
-    let _ = term_tx.send(Some(payload.clone()));
+    let watch_result = match &finish_error {
+        Some(error) => Err(error.clone()),
+        None => Ok(payload.clone()),
+    };
+    let _ = term_tx.send(Some(watch_result));
+    cleanup_pid_file(&pid_guard).await;
 
     let mut terminal_events = VecDeque::new();
+    if dropped_output_events > 0 {
+        terminal_events.push_back(ProcessEvent::Error(format!(
+            "dropped {dropped_output_events} buffered output events: receiver not draining"
+        )));
+    }
     if let Some(error) = finish_error {
         terminal_events.push_back(ProcessEvent::Error(error));
     }
@@ -365,7 +439,7 @@ async fn pump(parts: PumpParts) {
             biased;
             ctrl = ctrl_rx.recv(), if ctrl_open => match ctrl {
                 Some(ctrl) => {
-                    handle_ctrl(
+                    let _ = handle_ctrl(
                         ctrl,
                         &group,
                         &stdin_tx,
@@ -386,8 +460,6 @@ async fn pump(parts: PumpParts) {
             },
         }
     }
-
-    cleanup_pid_file(&pid_guard).await;
 }
 
 async fn cleanup_pid_file(pid_guard: &Option<PidFileGuard>) {

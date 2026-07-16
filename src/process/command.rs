@@ -20,6 +20,7 @@ pub struct Command {
 }
 
 impl Command {
+    /// Creates a command for `program` with process-module defaults.
     pub fn new(program: impl AsRef<OsStr>) -> Self {
         Self {
             program: program.as_ref().to_os_string(),
@@ -36,11 +37,13 @@ impl Command {
         }
     }
 
+    /// Appends one command-line argument.
     pub fn arg(mut self, a: impl AsRef<OsStr>) -> Self {
         self.args.push(a.as_ref().to_os_string());
         self
     }
 
+    /// Appends command-line arguments in iteration order.
     pub fn args<I, S>(mut self, args: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -51,53 +54,74 @@ impl Command {
         self
     }
 
+    /// Sets an environment variable for the child.
     pub fn env(mut self, k: impl AsRef<OsStr>, v: impl AsRef<OsStr>) -> Self {
         self.envs
             .push((k.as_ref().to_os_string(), v.as_ref().to_os_string()));
         self
     }
 
+    /// Sets the child's working directory.
     pub fn current_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.current_dir = Some(dir.into());
         self
     }
 
+    /// Sets the encoding used to decode stdout and stderr lines.
     pub fn encoding(mut self, enc: Option<&'static encoding_rs::Encoding>) -> Self {
         self.encoding = enc;
         self
     }
 
+    /// Controls whether the child window is hidden on Windows.
     pub fn hide_window(mut self, hide: bool) -> Self {
         self.hide_window = hide;
         self
     }
 
+    /// Sets the grace period between graceful termination and a hard kill.
     pub fn kill_grace(mut self, d: Duration) -> Self {
         self.kill_grace = d;
         self
     }
 
+    /// Sets the process-event channel capacity.
+    ///
+    /// A full channel pauses the event pump and therefore pipe reads. Receivers
+    /// should drain promptly: once the engine's 256 KiB output ring fills, its
+    /// oldest lines are silently dropped by design.
     pub fn event_channel_capacity(mut self, cap: usize) -> Self {
         self.event_channel_capacity = cap.max(1);
         self
     }
 
+    /// Sets the maximum process lifetime before the whole process tree is killed.
     pub fn timeout(mut self, d: Duration) -> Self {
         self.timeout = Some(d);
         self
     }
 
+    /// Enables or disables a writable stdin pipe for the child.
     pub fn pipe_stdin(mut self, pipe: bool) -> Self {
         self.pipe_stdin = pipe;
         self
     }
 
+    /// Records the child pid at `path` for validated residual-process cleanup.
     pub fn pid_file(mut self, path: impl Into<PathBuf>) -> Self {
         self.pid_file = Some(path.into());
         self
     }
 
     /// Spawns the child. `ProcessEvent::Terminated` is the final event.
+    ///
+    /// Event delivery applies backpressure: a full channel pauses the pump and
+    /// pipe reads, and output beyond the engine's 256 KiB ring silently drops
+    /// the oldest lines. Drain the receiver promptly. If a receiver stops
+    /// draining during termination, buffered output is dropped after five
+    /// seconds so [`super::handle::ProcessHandle::kill`],
+    /// [`super::handle::ProcessHandle::graceful_kill`], and
+    /// [`super::handle::ProcessHandle::wait`] remain live.
     pub async fn spawn(
         self,
     ) -> Result<
@@ -118,7 +142,7 @@ impl Command {
     }
 
     /// One-shot run capturing stdout/stderr. A non-zero exit is data, not an error;
-    /// only spawn failures and timeouts are `Err`.
+    /// launch failures, timeouts, and execution-engine failures are `Err`.
     pub async fn output(self) -> Result<super::error::ProcessOutput, super::error::ProcessError> {
         super::engine::run_capture(self).await
     }

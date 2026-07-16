@@ -3,6 +3,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use super::{error::ProcessError, event::TerminatedPayload};
 
 /// The kernel containment mechanism actually in effect (mirrors the engine's report).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Containment {
     JobObject,
@@ -23,14 +24,16 @@ pub struct ProcessHandle {
     pub(crate) pid: u32,
     pub(crate) containment: Containment,
     pub(crate) ctrl: mpsc::Sender<Ctrl>,
-    pub(crate) terminated: watch::Receiver<Option<TerminatedPayload>>,
+    pub(crate) terminated: watch::Receiver<Option<Result<TerminatedPayload, String>>>,
 }
 
 impl ProcessHandle {
+    /// Returns the operating-system process identifier of the direct child.
     pub fn pid(&self) -> u32 {
         self.pid
     }
 
+    /// Returns the whole-tree containment mechanism used for this child.
     pub fn containment(&self) -> Containment {
         self.containment
     }
@@ -39,8 +42,8 @@ impl ProcessHandle {
     pub async fn wait(&self) -> Result<TerminatedPayload, ProcessError> {
         let mut rx = self.terminated.clone();
         loop {
-            if let Some(payload) = rx.borrow().clone() {
-                return Ok(payload);
+            if let Some(result) = rx.borrow().clone() {
+                return result.map_err(ProcessError::Engine);
             }
             rx.changed()
                 .await
@@ -62,7 +65,9 @@ impl ProcessHandle {
 
     /// Writes and flushes bytes to the child's stdin pipe on a dedicated task,
     /// so output draining never stalls. `Ok(())` means the bytes were written
-    /// and flushed successfully.
+    /// and flushed successfully. The queue is bounded at 64 in-flight writes;
+    /// if the child stops reading, additional writes fail fast with
+    /// [`ProcessError::StdinUnavailable`].
     pub async fn write_stdin(&self, data: &[u8]) -> Result<(), ProcessError> {
         let data = data.to_vec();
         self.send_ctrl(move |reply| Ctrl::WriteStdin(data, reply))
@@ -74,13 +79,22 @@ impl ProcessHandle {
         make: impl FnOnce(oneshot::Sender<Result<(), ProcessError>>) -> Ctrl,
     ) -> Result<(), ProcessError> {
         let (tx, rx) = oneshot::channel();
-        if self.ctrl.send(make(tx)).await.is_err() {
-            return if self.terminated.borrow().is_some() {
+        let ctrl = make(tx);
+        let idempotent_kill = matches!(&ctrl, Ctrl::GracefulKill(_) | Ctrl::Kill(_));
+        if self.ctrl.send(ctrl).await.is_err() {
+            return if idempotent_kill && self.terminated.borrow().is_some() {
                 Ok(())
-            } else {
+            } else if idempotent_kill {
                 Err(ProcessError::AlreadyExited)
+            } else {
+                Err(ProcessError::StdinUnavailable)
             };
         }
-        rx.await.map_err(|_| ProcessError::AlreadyExited)?
+        match rx.await {
+            Ok(result) => result,
+            Err(_) if idempotent_kill && self.terminated.borrow().is_some() => Ok(()),
+            Err(_) if idempotent_kill => Err(ProcessError::AlreadyExited),
+            Err(_) => Err(ProcessError::StdinUnavailable),
+        }
     }
 }

@@ -1,5 +1,7 @@
 #![cfg(feature = "process")]
 
+use std::time::Duration;
+
 use nyanpasu_utils::process::{Command, ProcessEvent};
 
 fn child() -> &'static str {
@@ -12,6 +14,14 @@ async fn collect_all(mut rx: tokio::sync::mpsc::Receiver<ProcessEvent>) -> Vec<P
         evs.push(e);
     }
     evs
+}
+
+fn pid_alive(pid: u32) -> bool {
+    use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
+    let kind = RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing());
+    let mut system = System::new_with_specifics(kind);
+    system.refresh_specifics(kind);
+    system.process(Pid::from_u32(pid)).is_some()
 }
 
 #[tokio::test]
@@ -100,4 +110,62 @@ async fn containment_matches_platform() {
     #[cfg(all(unix, not(target_os = "linux")))]
     assert_eq!(c, Containment::ProcessGroup);
     collect_all(rx).await;
+}
+
+#[tokio::test]
+async fn spawn_timeout_kills_the_whole_tree() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let (handle, mut rx) = Command::new(child())
+            .args(["spawn-grandchild"])
+            .timeout(Duration::from_millis(500))
+            .spawn()
+            .await
+            .unwrap();
+        let mut grandchild_pid = None;
+        let mut events = Vec::new();
+
+        while let Some(event) = rx.recv().await {
+            if let ProcessEvent::Stdout(line) = &event
+                && let Some(pid) = line.trim().strip_prefix("grandchild-pid:")
+            {
+                grandchild_pid = Some(pid.parse::<u32>().unwrap());
+            }
+            events.push(event);
+        }
+
+        assert!(matches!(events.last(), Some(ProcessEvent::Terminated(_))));
+        handle.wait().await.unwrap();
+
+        let grandchild_pid = grandchild_pid.expect("grandchild pid event");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while pid_alive(grandchild_pid) && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            !pid_alive(grandchild_pid),
+            "grandchild survived spawn timeout"
+        );
+    })
+    .await
+    .expect("spawn timeout teardown hung");
+}
+
+#[tokio::test]
+async fn kill_completes_when_event_receiver_stops_draining() {
+    let (handle, _rx) = Command::new(child())
+        .args(["spam-stdout", "1000"])
+        .event_channel_capacity(1)
+        .spawn()
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::timeout(Duration::from_secs(30), handle.kill())
+        .await
+        .expect("kill hung behind event backpressure")
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), handle.wait())
+        .await
+        .expect("wait hung after kill")
+        .unwrap();
 }
