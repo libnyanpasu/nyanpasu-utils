@@ -15,6 +15,18 @@ pub struct Backoff {
     jitter: bool,
 }
 
+fn time_entropy() -> u64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x9E37_79B9_7F4A_7C15);
+    // SplitMix64 finalizer decorrelates consecutive calls and spreads their bits.
+    let mut z = nanos.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
 impl Backoff {
     pub fn exponential(initial: Duration, max: Duration) -> Self {
         Self {
@@ -42,13 +54,9 @@ impl Backoff {
             return base;
         }
         // Cheap deterministic-free jitter in [-25%, +25%] without a rand dependency.
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0) as u64;
         let base_ns = base.as_nanos().max(1) as u64;
         let span = base_ns / 2; // total width 50% => ±25%
-        let offset = nanos % span.max(1);
+        let offset = time_entropy() % span.max(1);
         Duration::from_nanos(base_ns - span / 2 + offset)
     }
 }
@@ -89,12 +97,15 @@ mod tests {
     #[test]
     fn jitter_stays_within_25_percent() {
         let b = Backoff::exponential(Duration::from_secs(4), Duration::from_secs(60)).with_jitter();
-        for _ in 0..100 {
-            let d = b.delay_for(0);
+        let samples: Vec<_> = (0..1000).map(|_| b.delay_for(0)).collect();
+
+        for d in &samples {
             assert!(
-                d >= Duration::from_secs(3) && d <= Duration::from_secs(5),
+                *d >= Duration::from_secs(3) && *d <= Duration::from_secs(5),
                 "{d:?}"
             );
         }
+        assert!(samples.iter().min().unwrap() < &Duration::from_secs(4));
+        assert!(samples.iter().max().unwrap() > &Duration::from_secs(4));
     }
 }
