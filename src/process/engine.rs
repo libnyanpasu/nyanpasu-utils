@@ -10,6 +10,7 @@ use super::{
     error::ProcessError,
     event::{ProcessEvent, TerminatedPayload},
     handle::{Containment, Ctrl},
+    pid_file::PidFileGuard,
 };
 
 pub(crate) struct SpawnParts {
@@ -18,6 +19,18 @@ pub(crate) struct SpawnParts {
     pub ctrl_tx: mpsc::Sender<Ctrl>,
     pub terminated_rx: watch::Receiver<Option<TerminatedPayload>>,
     pub events_rx: mpsc::Receiver<ProcessEvent>,
+}
+
+struct PumpParts {
+    run: processkit::RunningProcess,
+    events: processkit::OutputEvents,
+    group: Arc<processkit::ProcessGroup>,
+    stdin_tx: Option<mpsc::UnboundedSender<StdinWrite>>,
+    kill_grace: Duration,
+    ev_tx: mpsc::Sender<ProcessEvent>,
+    ctrl_rx: mpsc::Receiver<Ctrl>,
+    term_tx: watch::Sender<Option<TerminatedPayload>>,
+    pid_guard: Option<PidFileGuard>,
 }
 
 fn build_pk(cmd: &Command) -> processkit::Command {
@@ -166,6 +179,15 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
     let capacity = cmd.event_channel_capacity;
     let kill_grace = cmd.kill_grace;
     let pipe_stdin = cmd.pipe_stdin;
+    let pid_guard = match &cmd.pid_file {
+        Some(path) => {
+            let expected_exe = std::path::Path::new(&cmd.program)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned());
+            Some(PidFileGuard::prepare(path.clone(), expected_exe).await?)
+        }
+        None => None,
+    };
     let pk = build_pk(&cmd);
 
     let spawn_error = |error: processkit::Error| ProcessError::Spawn {
@@ -178,6 +200,11 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
     let pid = run
         .pid()
         .ok_or_else(|| ProcessError::Engine("spawned process has no pid".into()))?;
+    if let Some(g) = &pid_guard
+        && let Err(e) = g.write(pid).await
+    {
+        tracing::warn!("failed to write pid file: {e}");
+    }
     let stdin_tx = if pipe_stdin {
         run.take_stdin().map(|stdin| {
             let (stdin_tx, stdin_rx) = mpsc::unbounded_channel();
@@ -195,9 +222,17 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
     let (ctrl_tx, ctrl_rx) = mpsc::channel(8);
     let (term_tx, term_rx) = watch::channel(None);
 
-    tokio::spawn(pump(
-        run, events, group, stdin_tx, kill_grace, ev_tx, ctrl_rx, term_tx,
-    ));
+    tokio::spawn(pump(PumpParts {
+        run,
+        events,
+        group,
+        stdin_tx,
+        kill_grace,
+        ev_tx,
+        ctrl_rx,
+        term_tx,
+        pid_guard,
+    }));
 
     Ok(SpawnParts {
         pid,
@@ -208,17 +243,18 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn pump(
-    run: processkit::RunningProcess,
-    mut events: processkit::OutputEvents,
-    group: Arc<processkit::ProcessGroup>,
-    stdin_tx: Option<mpsc::UnboundedSender<StdinWrite>>,
-    kill_grace: Duration,
-    ev_tx: mpsc::Sender<ProcessEvent>,
-    mut ctrl_rx: mpsc::Receiver<Ctrl>,
-    term_tx: watch::Sender<Option<TerminatedPayload>>,
-) {
+async fn pump(parts: PumpParts) {
+    let PumpParts {
+        run,
+        mut events,
+        group,
+        stdin_tx,
+        kill_grace,
+        ev_tx,
+        mut ctrl_rx,
+        term_tx,
+        pid_guard,
+    } = parts;
     let mut run = Some(run);
     let mut pending_event = None;
     let mut hard_kill_at = None;
@@ -347,5 +383,9 @@ async fn pump(
                 Err(_) => events_open = false,
             },
         }
+    }
+
+    if let Some(g) = pid_guard {
+        g.cleanup().await;
     }
 }

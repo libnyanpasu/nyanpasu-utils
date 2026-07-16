@@ -7,6 +7,7 @@ mod engine;
 mod error;
 mod event;
 mod handle;
+mod pid_file;
 
 pub use command::Command;
 pub use error::{ProcessError, ProcessOutput};
