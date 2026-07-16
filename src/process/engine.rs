@@ -45,6 +45,30 @@ fn build_pk(cmd: &Command) -> processkit::Command {
     pk
 }
 
+pub(crate) async fn run_capture(cmd: Command) -> Result<super::error::ProcessOutput, ProcessError> {
+    let program = cmd.program.to_string_lossy().into_owned();
+    let timeout = cmd.timeout;
+    let result = build_pk(&cmd)
+        .output_string()
+        .await
+        .map_err(|error| ProcessError::Spawn {
+            program,
+            message: error.to_string(),
+        })?;
+
+    if result.timed_out() {
+        return Err(ProcessError::Timeout {
+            after: timeout.unwrap_or_default(),
+        });
+    }
+
+    Ok(super::error::ProcessOutput {
+        code: result.code(),
+        stdout: result.stdout().clone(),
+        stderr: result.stderr().to_owned(),
+    })
+}
+
 fn map_containment(mechanism: processkit::Mechanism) -> Containment {
     match mechanism {
         processkit::Mechanism::JobObject => Containment::JobObject,

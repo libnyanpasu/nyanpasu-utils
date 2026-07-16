@@ -116,6 +116,12 @@ impl Command {
         };
         Ok((handle, parts.events_rx))
     }
+
+    /// One-shot run capturing stdout/stderr. A non-zero exit is data, not an error;
+    /// only spawn failures and timeouts are `Err`.
+    pub async fn output(self) -> Result<super::error::ProcessOutput, super::error::ProcessError> {
+        super::engine::run_capture(self).await
+    }
 }
 
 #[cfg(test)]
