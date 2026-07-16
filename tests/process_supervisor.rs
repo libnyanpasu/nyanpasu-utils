@@ -1,13 +1,18 @@
 #![cfg(feature = "process")]
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
 use nyanpasu_utils::process::{
-    Backoff, Command, ReadinessProbe, RestartPolicy, Supervisor, SupervisorEvent,
+    Backoff, Command, ProcessError, ProcessEvent, ReadinessProbe, RestartPolicy, Supervisor,
+    SupervisorEvent,
 };
+use tokio_util::sync::CancellationToken;
 
 fn child() -> &'static str {
     env!("CARGO_BIN_EXE_nyanpasu-test-child")
@@ -138,4 +143,79 @@ async fn first_spawn_failure_is_error() {
         .spawn()
         .await;
     assert!(r.is_err());
+}
+
+#[tokio::test]
+async fn readiness_is_not_starved_by_continuous_output() {
+    let output_count = Arc::new(AtomicUsize::new(0));
+    let ready_output_count = Arc::new(AtomicUsize::new(usize::MAX));
+    let output_count_for_process = output_count.clone();
+    let output_count_for_ready = output_count.clone();
+    let ready_output_count_for_hook = ready_output_count.clone();
+
+    let supervisor = Supervisor::builder(|| Command::new(child()).args(["spam-stdout", "200000"]))
+        .readiness(ReadinessProbe::AliveAfter(Duration::from_millis(100)))
+        .on_process_event(move |event| {
+            if matches!(event, ProcessEvent::Stdout(_)) {
+                output_count_for_process.fetch_add(1, Ordering::Relaxed);
+            }
+        })
+        .on_event(move |event| {
+            if matches!(event, SupervisorEvent::Ready) {
+                ready_output_count_for_hook.store(
+                    output_count_for_ready.load(Ordering::Relaxed),
+                    Ordering::Relaxed,
+                );
+            }
+        })
+        .spawn()
+        .await
+        .unwrap();
+
+    let count_at_ready = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let count = ready_output_count.load(Ordering::Relaxed);
+            if count != usize::MAX {
+                break count;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Ready was starved by output");
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while output_count.load(Ordering::Relaxed) <= count_at_ready {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("output was no longer flowing when Ready was emitted");
+
+    supervisor.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelled_token_prevents_first_spawn() {
+    let token = CancellationToken::new();
+    token.cancel();
+    let factory_calls = Arc::new(AtomicUsize::new(0));
+    let factory_calls_ = factory_calls.clone();
+
+    let error = Supervisor::builder(move || {
+        factory_calls_.fetch_add(1, Ordering::Relaxed);
+        Command::new(child()).args(["sleep-forever"])
+    })
+    .cancel_token(token)
+    .spawn()
+    .await
+    .err()
+    .expect("cancelled supervisor must fail before spawning");
+
+    assert!(matches!(
+        error,
+        ProcessError::Engine(message)
+            if message == "supervisor started with cancelled token"
+    ));
+    assert_eq!(factory_calls.load(Ordering::Relaxed), 0);
 }

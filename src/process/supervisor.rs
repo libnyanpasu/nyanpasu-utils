@@ -1,4 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use tokio_util::sync::CancellationToken;
 
@@ -13,6 +19,11 @@ type Factory = Arc<dyn Fn() -> Command + Send + Sync>;
 type EventHook = Arc<dyn Fn(SupervisorEvent) + Send + Sync>;
 type ProcessEventHook = Arc<dyn Fn(ProcessEvent) + Send + Sync>;
 
+/// Controls whether and how often failed children are restarted.
+///
+/// A child that crashes after its readiness window has reset the attempt budget,
+/// matching legacy `recover_core` behavior. A storm guard or sliding-window
+/// policy may be added in the future for that failure pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestartPolicy {
     Never,
@@ -27,12 +38,17 @@ pub struct Backoff {
 }
 
 fn time_entropy() -> u64 {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0x9E37_79B9_7F4A_7C15);
-    // SplitMix64 finalizer decorrelates consecutive calls and spreads their bits.
-    let mut z = nanos.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    // SplitMix64 finalizer decorrelates same-tick calls and spreads their bits.
+    let mut z = nanos
+        .wrapping_add(counter.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+        .wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^ (z >> 31)
@@ -55,7 +71,7 @@ impl Backoff {
     pub(crate) fn delay_for(&self, attempt: u32) -> Duration {
         let base = self
             .initial
-            .saturating_mul(2u32.saturating_pow(attempt.min(16)))
+            .saturating_mul(2u32.saturating_pow(attempt.min(30)))
             .min(self.max);
         if !self.jitter {
             return base;
@@ -68,6 +84,11 @@ impl Backoff {
     }
 }
 
+/// Defines when a running child is considered ready.
+///
+/// Passing readiness resets the restart attempt budget, so a crash after the
+/// window starts a fresh budget, matching legacy `recover_core` behavior. A
+/// storm guard or sliding-window policy may be added in the future.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum ReadinessProbe {
@@ -99,14 +120,24 @@ pub struct SupervisorBuilder {
 
 /// Handle to a running supervision loop.
 ///
-/// Call [`Supervisor::stop`] for the intended lifecycle end. Dropping a
-/// `Supervisor` without calling `stop` detaches the supervision loop: it keeps
-/// running and restarting according to its policy with no remaining
-/// `Supervisor` handle available to stop it.
+/// Dropping a `Supervisor` cancels supervision asynchronously: the loop kills
+/// the current child and exits, but no caller awaits that cleanup. Call
+/// [`Supervisor::stop`] for deterministic shutdown.
 pub struct Supervisor {
     token: CancellationToken,
     current: Arc<tokio::sync::Mutex<Option<ProcessHandle>>>,
-    task: tokio::task::JoinHandle<()>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+async fn stop_process(handle: ProcessHandle) -> Result<(), ProcessError> {
+    if handle.graceful_kill().await.is_err() {
+        match handle.kill().await {
+            Err(ProcessError::AlreadyExited) => Ok(()),
+            result => result,
+        }
+    } else {
+        Ok(())
+    }
 }
 
 impl Supervisor {
@@ -128,14 +159,25 @@ impl Supervisor {
 
     /// Cancels restarts, gracefully kills the current child, and waits for the
     /// supervision loop to end.
-    pub async fn stop(self) -> Result<(), ProcessError> {
+    pub async fn stop(mut self) -> Result<(), ProcessError> {
         self.token.cancel();
         let current = self.current.lock().await.take();
-        if let Some(handle) = current {
-            let _ = handle.graceful_kill().await;
-        }
-        let _ = self.task.await;
-        Ok(())
+        let stop_result = match current {
+            Some(handle) => stop_process(handle).await,
+            None => Ok(()),
+        };
+        self.task
+            .take()
+            .expect("supervisor task")
+            .await
+            .map_err(|error| ProcessError::Engine(format!("supervisor task failed: {error}")))?;
+        stop_result
+    }
+}
+
+impl Drop for Supervisor {
+    fn drop(&mut self) {
+        self.token.cancel();
     }
 }
 
@@ -193,6 +235,15 @@ impl SupervisorBuilder {
     /// Cancellation interrupts readiness or backoff, prevents further restarts,
     /// gracefully stops the current child, and ends with [`SupervisorEvent::Stopped`].
     pub async fn spawn(self) -> Result<Supervisor, ProcessError> {
+        if self
+            .cancel_token
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            return Err(ProcessError::Engine(
+                "supervisor started with cancelled token".into(),
+            ));
+        }
         let token = self.cancel_token.unwrap_or_default().child_token();
         let current: Arc<tokio::sync::Mutex<Option<ProcessHandle>>> = Arc::default();
         let emit = {
@@ -238,8 +289,20 @@ impl SupervisorBuilder {
                                 readiness_pending = false;
                                 if let Some(handle) = current_.lock().await.take() {
                                     kill_task = Some(tokio::spawn(async move {
-                                        let _ = handle.graceful_kill().await;
+                                        let _ = stop_process(handle).await;
                                     }));
+                                }
+                            }
+                            _ = tokio::time::sleep_until(ready_at), if readiness_pending => {
+                                readiness_pending = false;
+                                let child_is_alive = current_
+                                    .lock()
+                                    .await
+                                    .as_ref()
+                                    .is_some_and(|handle| handle.terminated.borrow().is_none());
+                                if child_is_alive && !token_.is_cancelled() {
+                                    attempt = 0;
+                                    emit(SupervisorEvent::Ready);
                                 }
                             }
                             maybe_event = rx.recv() => match maybe_event {
@@ -256,18 +319,6 @@ impl SupervisorBuilder {
                                     signal: None,
                                 },
                             },
-                            _ = tokio::time::sleep_until(ready_at), if readiness_pending => {
-                                readiness_pending = false;
-                                let child_is_alive = current_
-                                    .lock()
-                                    .await
-                                    .as_ref()
-                                    .is_some_and(|handle| handle.terminated.borrow().is_none());
-                                if child_is_alive && !token_.is_cancelled() {
-                                    attempt = 0;
-                                    emit(SupervisorEvent::Ready);
-                                }
-                            }
                         }
                     };
 
@@ -334,7 +385,7 @@ impl SupervisorBuilder {
         Ok(Supervisor {
             token,
             current,
-            task,
+            task: Some(task),
         })
     }
 }
@@ -351,6 +402,9 @@ mod tests {
         assert_eq!(b.delay_for(1), Duration::from_secs(2));
         assert_eq!(b.delay_for(4), Duration::from_secs(16));
         assert_eq!(b.delay_for(10), Duration::from_secs(30)); // capped
+
+        let long = Backoff::exponential(Duration::from_millis(1), Duration::from_secs(600));
+        assert_eq!(long.delay_for(25), Duration::from_secs(600));
     }
 
     #[test]
