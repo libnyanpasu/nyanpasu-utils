@@ -105,3 +105,47 @@ async fn abandonment_cleans_up_pid_file() {
         "pid file still exists after abandonment"
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn symlink_pid_file_is_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("target.pid");
+    let pid_path = dir.path().join("core.pid");
+    std::fs::write(&target, std::process::id().to_string()).unwrap();
+    symlink(&target, &pid_path).unwrap();
+
+    let error = Command::new(child())
+        .args(["exit-with", "0"])
+        .pid_file(&pid_path)
+        .spawn()
+        .await
+        .err()
+        .expect("symlink pid file must fail spawn");
+    assert!(matches!(
+        error,
+        nyanpasu_utils::process::ProcessError::Io(error)
+            if error.kind() == std::io::ErrorKind::InvalidInput
+    ));
+}
+
+#[tokio::test]
+async fn unrelated_pid_is_not_killed_by_residual_cleanup() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid_path = dir.path().join("core.pid");
+    let own_pid = std::process::id();
+    std::fs::write(&pid_path, own_pid.to_string()).unwrap();
+
+    let (handle, mut rx) = Command::new(child())
+        .args(["exit-with", "0"])
+        .pid_file(&pid_path)
+        .spawn()
+        .await
+        .unwrap();
+    while rx.recv().await.is_some() {}
+
+    assert_eq!(handle.wait().await.unwrap().code, Some(0));
+    assert!(pid_alive(own_pid), "pid validator killed the test process");
+}
