@@ -67,6 +67,11 @@ windows = { version = "0.62", features = [
 [dev-dependencies]
 test-log = "0.2"
 
+[[bin]]
+name = "nyanpasu-test-child"
+path = "tests/helpers/test_child.rs"
+doc = false
+
 [[example]]
 name = "containment_probe"
 required-features = ["process"]
