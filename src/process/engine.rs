@@ -96,6 +96,7 @@ async fn handle_ctrl(
     ctrl: Ctrl,
     group: &processkit::ProcessGroup,
     stdin: &mut Option<processkit::ProcessStdin>,
+    pipe_stdin: bool,
     kill_grace: Duration,
     hard_kill_at: &mut Option<tokio::time::Instant>,
 ) {
@@ -129,12 +130,15 @@ async fn handle_ctrl(
             let _ = reply.send(result);
         }
         Ctrl::WriteStdin(data, reply) => {
-            let result = match stdin.as_mut() {
-                Some(writer) => writer
-                    .write(&data)
-                    .await
-                    .map_err(|_| ProcessError::StdinUnavailable),
-                None => Err(ProcessError::StdinUnavailable),
+            let result = match (pipe_stdin, stdin.as_mut()) {
+                (true, Some(writer)) => match writer.write(&data).await {
+                    Ok(()) => writer
+                        .flush()
+                        .await
+                        .map_err(|_| ProcessError::StdinUnavailable),
+                    Err(_) => Err(ProcessError::StdinUnavailable),
+                },
+                _ => Err(ProcessError::StdinUnavailable),
             };
             if result.is_err() {
                 *stdin = None;
@@ -148,6 +152,7 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
     let program = cmd.program.to_string_lossy().into_owned();
     let capacity = cmd.event_channel_capacity;
     let kill_grace = cmd.kill_grace;
+    let pipe_stdin = cmd.pipe_stdin;
     let pk = build_pk(&cmd);
 
     let spawn_error = |error: processkit::Error| ProcessError::Spawn {
@@ -170,7 +175,7 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
     let (term_tx, term_rx) = watch::channel(None);
 
     tokio::spawn(pump(
-        run, events, group, stdin, kill_grace, ev_tx, ctrl_rx, term_tx,
+        run, events, group, stdin, pipe_stdin, kill_grace, ev_tx, ctrl_rx, term_tx,
     ));
 
     Ok(SpawnParts {
@@ -188,6 +193,7 @@ async fn pump(
     mut events: processkit::OutputEvents,
     group: Arc<processkit::ProcessGroup>,
     mut stdin: Option<processkit::ProcessStdin>,
+    pipe_stdin: bool,
     kill_grace: Duration,
     ev_tx: mpsc::Sender<ProcessEvent>,
     mut ctrl_rx: mpsc::Receiver<Ctrl>,
@@ -209,7 +215,15 @@ async fn pump(
             biased;
             ctrl = ctrl_rx.recv(), if ctrl_open => match ctrl {
                 Some(ctrl) => {
-                    handle_ctrl(ctrl, &group, &mut stdin, kill_grace, &mut hard_kill_at).await;
+                    handle_ctrl(
+                        ctrl,
+                        &group,
+                        &mut stdin,
+                        pipe_stdin,
+                        kill_grace,
+                        &mut hard_kill_at,
+                    )
+                    .await;
                 }
                 None => ctrl_open = false,
             },
@@ -253,7 +267,15 @@ async fn pump(
             biased;
             ctrl = ctrl_rx.recv(), if ctrl_open => match ctrl {
                 Some(ctrl) => {
-                    handle_ctrl(ctrl, &group, &mut stdin, kill_grace, &mut hard_kill_at).await;
+                    handle_ctrl(
+                        ctrl,
+                        &group,
+                        &mut stdin,
+                        pipe_stdin,
+                        kill_grace,
+                        &mut hard_kill_at,
+                    )
+                    .await;
                 }
                 None => ctrl_open = false,
             },
@@ -290,7 +312,15 @@ async fn pump(
             biased;
             ctrl = ctrl_rx.recv(), if ctrl_open => match ctrl {
                 Some(ctrl) => {
-                    handle_ctrl(ctrl, &group, &mut stdin, kill_grace, &mut hard_kill_at).await;
+                    handle_ctrl(
+                        ctrl,
+                        &group,
+                        &mut stdin,
+                        pipe_stdin,
+                        kill_grace,
+                        &mut hard_kill_at,
+                    )
+                    .await;
                 }
                 None => ctrl_open = false,
             },

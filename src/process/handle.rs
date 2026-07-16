@@ -10,10 +10,6 @@ pub enum Containment {
     ProcessGroup,
 }
 
-#[expect(
-    dead_code,
-    reason = "control methods construct these variants starting with Tasks 6 and 8"
-)]
 pub(crate) enum Ctrl {
     GracefulKill(oneshot::Sender<Result<(), ProcessError>>),
     Kill(oneshot::Sender<Result<(), ProcessError>>),
@@ -62,6 +58,12 @@ impl ProcessHandle {
         self.send_ctrl(Ctrl::Kill).await?;
         self.wait().await?;
         Ok(())
+    }
+
+    pub async fn write_stdin(&self, data: &[u8]) -> Result<(), ProcessError> {
+        let data = data.to_vec();
+        self.send_ctrl(move |reply| Ctrl::WriteStdin(data, reply))
+            .await
     }
 
     pub(crate) async fn send_ctrl(
