@@ -74,3 +74,34 @@ async fn residual_process_is_killed_before_spawn() {
     assert_eq!(content, h2.pid());
     h2.kill().await.unwrap();
 }
+
+#[tokio::test]
+async fn abandonment_cleans_up_pid_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid_path = dir.path().join("core.pid");
+    let (handle, rx) = Command::new(child())
+        .args(["sleep-forever"])
+        .pid_file(&pid_path)
+        .spawn()
+        .await
+        .unwrap();
+    let pid: u32 = std::fs::read_to_string(&pid_path)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+
+    drop(handle);
+    drop(rx);
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while (pid_alive(pid) || pid_path.exists()) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    assert!(!pid_alive(pid), "abandoned process still alive");
+    assert!(
+        !pid_path.exists(),
+        "pid file still exists after abandonment"
+    );
+}

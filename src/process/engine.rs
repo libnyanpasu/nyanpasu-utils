@@ -264,6 +264,7 @@ async fn pump(parts: PumpParts) {
     loop {
         if !events_open && !ctrl_open {
             let _ = group.kill_all();
+            cleanup_pid_file(&pid_guard).await;
             return;
         }
 
@@ -314,6 +315,7 @@ async fn pump(parts: PumpParts) {
     let finished = loop {
         if !events_open && !ctrl_open {
             let _ = group.kill_all();
+            cleanup_pid_file(&pid_guard).await;
             return;
         }
 
@@ -385,7 +387,11 @@ async fn pump(parts: PumpParts) {
         }
     }
 
-    if let Some(g) = pid_guard {
-        g.cleanup().await;
+    cleanup_pid_file(&pid_guard).await;
+}
+
+async fn cleanup_pid_file(pid_guard: &Option<PidFileGuard>) {
+    if let Some(guard) = pid_guard {
+        guard.cleanup().await;
     }
 }

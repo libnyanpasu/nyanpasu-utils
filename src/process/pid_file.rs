@@ -4,12 +4,17 @@ use std::{
 };
 
 /// Owns a pid file's lifecycle around one spawned child (design §5.4).
+///
+/// Cleanup verifies that the file still belongs to this child and runs after both
+/// normal completion and pump abandonment.
 pub(crate) struct PidFileGuard {
     path: PathBuf,
     pid: AtomicU32,
 }
 
 impl PidFileGuard {
+    /// Kill any residual process recorded in the pid file, validated against
+    /// `expected_exe` when provided.
     pub(crate) async fn prepare(
         path: PathBuf,
         expected_exe: Option<String>,
@@ -32,6 +37,7 @@ impl PidFileGuard {
         Ok(())
     }
 
+    /// Best-effort removal; never fails the pump.
     pub(crate) async fn cleanup(&self) {
         let pid = self.pid.load(Ordering::Relaxed);
         if crate::os::get_pid_from_file(&self.path).await != Some(pid) {
