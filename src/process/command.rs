@@ -6,6 +6,10 @@ use std::{
 
 /// Builder for spawning a managed child process. See module docs for the contract.
 pub struct Command {
+    #[expect(
+        dead_code,
+        reason = "fields are read by process::engine starting with Task 5"
+    )]
     pub(crate) program: OsString,
     pub(crate) args: Vec<OsString>,
     pub(crate) envs: Vec<(OsString, OsString)>,
@@ -34,11 +38,6 @@ impl Command {
             pipe_stdin: false,
             pid_file: None,
         }
-    }
-
-    /// Returns the configured program.
-    pub fn get_program(&self) -> &OsStr {
-        &self.program
     }
 
     pub fn arg(mut self, a: impl AsRef<OsStr>) -> Self {
