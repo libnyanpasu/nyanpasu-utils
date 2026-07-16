@@ -1,5 +1,7 @@
 #![cfg(feature = "process")]
 
+use std::time::Duration;
+
 use nyanpasu_utils::process::{Command, ProcessError, ProcessEvent};
 
 fn child() -> &'static str {
@@ -47,12 +49,22 @@ async fn write_stdin_does_not_stall_output_pump() {
         .await
         .unwrap();
 
-    handle.write_stdin(b"x\n").await.unwrap();
+    let big = vec![b'x'; 1 << 20];
+    let h2 = handle.clone();
+    // Pre-fix, the pump awaited this 1 MiB write inline, so stdout draining stopped and
+    // the child blocked on its full stdout pipe without exiting; post-fix, the pump
+    // keeps draining while the write is parked on the dedicated writer task.
+    let write_task = tokio::spawn(async move { h2.write_stdin(&big).await });
 
-    let mut events = Vec::new();
-    while let Some(event) = rx.recv().await {
-        events.push(event);
-    }
+    let events = tokio::time::timeout(Duration::from_secs(60), async {
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        events
+    })
+    .await
+    .expect("pump stalled: regression of full-duplex deadlock");
     assert_eq!(
         events
             .iter()
@@ -61,4 +73,10 @@ async fn write_stdin_does_not_stall_output_pump() {
         10000
     );
     assert!(matches!(events.last(), Some(ProcessEvent::Terminated(_))));
+
+    // Child death may resolve the write as Ok or Err(StdinUnavailable), depending on how much the OS buffered.
+    let _write_result = tokio::time::timeout(Duration::from_secs(10), write_task)
+        .await
+        .expect("stdin write never resolved")
+        .unwrap();
 }
