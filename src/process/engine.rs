@@ -3,7 +3,7 @@
 use std::{collections::VecDeque, future::pending, sync::Arc, time::Duration};
 
 use processkit::prelude::StreamExt;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use super::{
     command::Command,
@@ -92,11 +92,30 @@ async fn hard_kill_deadline(deadline: Option<tokio::time::Instant>) {
     }
 }
 
-async fn handle_ctrl(
+type StdinWrite = (Vec<u8>, oneshot::Sender<Result<(), ProcessError>>);
+
+async fn write_stdin(
+    mut stdin: processkit::ProcessStdin,
+    mut requests: mpsc::UnboundedReceiver<StdinWrite>,
+) {
+    while let Some((data, reply)) = requests.recv().await {
+        if stdin.write(&data).await.is_err() || stdin.flush().await.is_err() {
+            let _ = reply.send(Err(ProcessError::StdinUnavailable));
+            drop(stdin);
+            requests.close();
+            while let Some((_, reply)) = requests.recv().await {
+                let _ = reply.send(Err(ProcessError::StdinUnavailable));
+            }
+            return;
+        }
+        let _ = reply.send(Ok(()));
+    }
+}
+
+fn handle_ctrl(
     ctrl: Ctrl,
     group: &processkit::ProcessGroup,
-    stdin: &mut Option<processkit::ProcessStdin>,
-    pipe_stdin: bool,
+    stdin_tx: &Option<mpsc::UnboundedSender<StdinWrite>>,
     kill_grace: Duration,
     hard_kill_at: &mut Option<tokio::time::Instant>,
 ) {
@@ -130,20 +149,14 @@ async fn handle_ctrl(
             let _ = reply.send(result);
         }
         Ctrl::WriteStdin(data, reply) => {
-            let result = match (pipe_stdin, stdin.as_mut()) {
-                (true, Some(writer)) => match writer.write(&data).await {
-                    Ok(()) => writer
-                        .flush()
-                        .await
-                        .map_err(|_| ProcessError::StdinUnavailable),
-                    Err(_) => Err(ProcessError::StdinUnavailable),
-                },
-                _ => Err(ProcessError::StdinUnavailable),
-            };
-            if result.is_err() {
-                *stdin = None;
+            if let Some(stdin_tx) = stdin_tx {
+                if let Err(error) = stdin_tx.send((data, reply)) {
+                    let (_, reply) = error.0;
+                    let _ = reply.send(Err(ProcessError::StdinUnavailable));
+                }
+            } else {
+                let _ = reply.send(Err(ProcessError::StdinUnavailable));
             }
-            let _ = reply.send(result);
         }
     }
 }
@@ -165,7 +178,15 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
     let pid = run
         .pid()
         .ok_or_else(|| ProcessError::Engine("spawned process has no pid".into()))?;
-    let stdin = run.take_stdin();
+    let stdin_tx = if pipe_stdin {
+        run.take_stdin().map(|stdin| {
+            let (stdin_tx, stdin_rx) = mpsc::unbounded_channel();
+            tokio::spawn(write_stdin(stdin, stdin_rx));
+            stdin_tx
+        })
+    } else {
+        None
+    };
     let events = run
         .output_events()
         .map_err(|error| ProcessError::Engine(error.to_string()))?;
@@ -175,7 +196,7 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
     let (term_tx, term_rx) = watch::channel(None);
 
     tokio::spawn(pump(
-        run, events, group, stdin, pipe_stdin, kill_grace, ev_tx, ctrl_rx, term_tx,
+        run, events, group, stdin_tx, kill_grace, ev_tx, ctrl_rx, term_tx,
     ));
 
     Ok(SpawnParts {
@@ -192,8 +213,7 @@ async fn pump(
     run: processkit::RunningProcess,
     mut events: processkit::OutputEvents,
     group: Arc<processkit::ProcessGroup>,
-    mut stdin: Option<processkit::ProcessStdin>,
-    pipe_stdin: bool,
+    stdin_tx: Option<mpsc::UnboundedSender<StdinWrite>>,
     kill_grace: Duration,
     ev_tx: mpsc::Sender<ProcessEvent>,
     mut ctrl_rx: mpsc::Receiver<Ctrl>,
@@ -218,12 +238,10 @@ async fn pump(
                     handle_ctrl(
                         ctrl,
                         &group,
-                        &mut stdin,
-                        pipe_stdin,
+                        &stdin_tx,
                         kill_grace,
                         &mut hard_kill_at,
-                    )
-                    .await;
+                    );
                 }
                 None => ctrl_open = false,
             },
@@ -270,12 +288,10 @@ async fn pump(
                     handle_ctrl(
                         ctrl,
                         &group,
-                        &mut stdin,
-                        pipe_stdin,
+                        &stdin_tx,
                         kill_grace,
                         &mut hard_kill_at,
-                    )
-                    .await;
+                    );
                 }
                 None => ctrl_open = false,
             },
@@ -288,7 +304,6 @@ async fn pump(
         }
     };
 
-    stdin = None;
     let (payload, finish_error) = match finished {
         Ok(finished) => (map_outcome(&finished.outcome), None),
         Err(error) => (
@@ -315,12 +330,10 @@ async fn pump(
                     handle_ctrl(
                         ctrl,
                         &group,
-                        &mut stdin,
-                        pipe_stdin,
+                        &stdin_tx,
                         kill_grace,
                         &mut hard_kill_at,
-                    )
-                    .await;
+                    );
                 }
                 None => ctrl_open = false,
             },

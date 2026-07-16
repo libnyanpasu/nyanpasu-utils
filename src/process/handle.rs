@@ -60,6 +60,9 @@ impl ProcessHandle {
         Ok(())
     }
 
+    /// Writes and flushes bytes to the child's stdin pipe on a dedicated task,
+    /// so output draining never stalls. `Ok(())` means the bytes were written
+    /// and flushed successfully.
     pub async fn write_stdin(&self, data: &[u8]) -> Result<(), ProcessError> {
         let data = data.to_vec();
         self.send_ctrl(move |reply| Ctrl::WriteStdin(data, reply))
