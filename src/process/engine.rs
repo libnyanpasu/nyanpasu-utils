@@ -104,6 +104,48 @@ fn map_outcome(outcome: &processkit::Outcome) -> TerminatedPayload {
     }
 }
 
+struct FinishOutput {
+    payload: TerminatedPayload,
+    stderr_tail: Vec<String>,
+    error: Option<String>,
+}
+
+/// Reconstruct the tail stderr lines that `finish()` drained from the shared
+/// sink. processkit builds `Finished.stderr` as `lines.join("\n")` and its line
+/// reader strips terminators, so `split('\n')` is the exact inverse for any
+/// non-empty capture.
+///
+/// Known limitation: `Finished.stderr` is a plain `String`, so an empty capture
+/// (`[]`) and a single empty line (`[""]`) both serialize to `""` and are
+/// indistinguishable. We treat `""` as "no lines", so a lone blank stderr line
+/// that `finish()` wins the drain for is dropped. Disambiguating would require a
+/// processkit API change (out of scope).
+fn split_stderr_tail(stderr: &str) -> Vec<String> {
+    if stderr.is_empty() {
+        Vec::new()
+    } else {
+        stderr.split('\n').map(str::to_owned).collect()
+    }
+}
+
+fn normalize_finish(result: processkit::Result<processkit::Finished>) -> FinishOutput {
+    match result {
+        Ok(finished) => FinishOutput {
+            payload: map_outcome(&finished.outcome),
+            stderr_tail: split_stderr_tail(&finished.stderr),
+            error: None,
+        },
+        Err(error) => FinishOutput {
+            payload: TerminatedPayload {
+                code: None,
+                signal: None,
+            },
+            stderr_tail: Vec::new(),
+            error: Some(error.to_string()),
+        },
+    }
+}
+
 async fn hard_kill_deadline(deadline: Option<tokio::time::Instant>) {
     match deadline {
         Some(at) => tokio::time::sleep_until(at).await,
@@ -278,7 +320,8 @@ async fn pump(parts: PumpParts) {
         term_tx,
         pid_guard,
     } = parts;
-    let mut run = Some(run);
+    let mut finish = Box::pin(run.finish());
+    let mut finish_output: Option<FinishOutput> = None;
     let mut pending_event = None;
     let mut hard_kill_at = timeout_at;
     let mut events_open = true;
@@ -323,6 +366,19 @@ async fn pump(parts: PumpParts) {
                 if pending_event.is_some() && drop_pending_at.is_none() {
                     drop_pending_at = Some(tokio::time::Instant::now() + DYING_EVENT_STALL);
                 }
+            }
+            result = &mut finish, if finish_output.is_none() => {
+                let out = normalize_finish(result);
+                dying = true;
+                if pending_event.is_some() && drop_pending_at.is_none() {
+                    drop_pending_at = Some(tokio::time::Instant::now() + DYING_EVENT_STALL);
+                }
+                let watch = match &out.error {
+                    Some(error) => Err(error.clone()),
+                    None => Ok(out.payload.clone()),
+                };
+                let _ = term_tx.send(Some(watch));
+                finish_output = Some(out);
             }
             _ = hard_kill_deadline(drop_pending_at), if dying && !drop_output && pending_event.is_some() => {
                 drop_pending_at = None;
@@ -375,64 +431,61 @@ async fn pump(parts: PumpParts) {
     }
 
     drop(events);
-    let mut finish = Box::pin(run.take().expect("running process").finish());
-    let finished = loop {
-        if !events_open && !ctrl_open && !abandoned {
-            abandoned = true;
-            hard_kill_at = None;
-            let _ = group.kill_all();
-        }
-
-        tokio::select! {
-            biased;
-            ctrl = ctrl_rx.recv(), if ctrl_open => match ctrl {
-                Some(ctrl) => {
-                    let _ = handle_ctrl(
-                        ctrl,
-                        &group,
-                        &stdin_tx,
-                        kill_grace,
-                        &mut hard_kill_at,
-                    );
+    let finish_output = match finish_output {
+        Some(out) => out,
+        None => {
+            let out = loop {
+                if !events_open && !ctrl_open && !abandoned {
+                    abandoned = true;
+                    hard_kill_at = None;
+                    let _ = group.kill_all();
                 }
-                None => ctrl_open = false,
-            },
-            _ = hard_kill_deadline(hard_kill_at) => {
-                hard_kill_at = None;
-                let _ = group.kill_all();
-            }
-            _ = ev_tx.closed(), if events_open => events_open = false,
-            result = &mut finish => break result,
+
+                tokio::select! {
+                    biased;
+                    ctrl = ctrl_rx.recv(), if ctrl_open => match ctrl {
+                        Some(ctrl) => {
+                            let _ = handle_ctrl(
+                                ctrl,
+                                &group,
+                                &stdin_tx,
+                                kill_grace,
+                                &mut hard_kill_at,
+                            );
+                        }
+                        None => ctrl_open = false,
+                    },
+                    _ = hard_kill_deadline(hard_kill_at) => {
+                        hard_kill_at = None;
+                        let _ = group.kill_all();
+                    }
+                    _ = ev_tx.closed(), if events_open => events_open = false,
+                    result = &mut finish => break normalize_finish(result),
+                }
+            };
+            let watch = match &out.error {
+                Some(error) => Err(error.clone()),
+                None => Ok(out.payload.clone()),
+            };
+            let _ = term_tx.send(Some(watch));
+            out
         }
     };
-
-    let (payload, finish_error) = match finished {
-        Ok(finished) => (map_outcome(&finished.outcome), None),
-        Err(error) => (
-            TerminatedPayload {
-                code: None,
-                signal: None,
-            },
-            Some(error.to_string()),
-        ),
-    };
-    let watch_result = match &finish_error {
-        Some(error) => Err(error.clone()),
-        None => Ok(payload.clone()),
-    };
-    let _ = term_tx.send(Some(watch_result));
     cleanup_pid_file(&pid_guard).await;
 
     let mut terminal_events = VecDeque::new();
+    for line in finish_output.stderr_tail {
+        terminal_events.push_back(ProcessEvent::Stderr(line));
+    }
     if dropped_output_events > 0 {
         terminal_events.push_back(ProcessEvent::Error(format!(
             "dropped {dropped_output_events} buffered output events: receiver not draining"
         )));
     }
-    if let Some(error) = finish_error {
+    if let Some(error) = finish_output.error {
         terminal_events.push_back(ProcessEvent::Error(error));
     }
-    terminal_events.push_back(ProcessEvent::Terminated(payload));
+    terminal_events.push_back(ProcessEvent::Terminated(finish_output.payload));
 
     // wait() has already returned and the pid file is already cleaned, so the
     // terminal events are the only thing left to deliver. A receiver that keeps
@@ -475,5 +528,26 @@ async fn pump(parts: PumpParts) {
 async fn cleanup_pid_file(pid_guard: &Option<PidFileGuard>) {
     if let Some(guard) = pid_guard {
         guard.cleanup().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_stderr_tail;
+
+    #[test]
+    fn split_stderr_tail_reconstructs_joined_lines() {
+        // Empty capture -> no lines (see split_stderr_tail's known limitation).
+        assert!(split_stderr_tail("").is_empty());
+        assert_eq!(split_stderr_tail("only"), vec!["only".to_owned()]);
+        assert_eq!(
+            split_stderr_tail("first\nsecond"),
+            vec!["first".to_owned(), "second".to_owned()]
+        );
+        // Trailing empty line survives: join("\n") of ["msg", ""] is "msg\n".
+        assert_eq!(
+            split_stderr_tail("msg\n"),
+            vec!["msg".to_owned(), String::new()]
+        );
     }
 }

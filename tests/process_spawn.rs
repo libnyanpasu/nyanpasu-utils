@@ -170,6 +170,48 @@ async fn kill_completes_when_event_receiver_stops_draining() {
         .unwrap();
 }
 
+#[tokio::test]
+async fn natural_exit_wait_completes_when_event_receiver_never_drains() {
+    let (handle, _rx) = Command::new(child())
+        .args(["spam-stdout", "2"])
+        .event_channel_capacity(1)
+        .spawn()
+        .await
+        .unwrap();
+
+    let payload = tokio::time::timeout(Duration::from_secs(30), handle.wait())
+        .await
+        .expect("wait hung after natural exit behind event backpressure")
+        .unwrap();
+    assert_eq!(payload.code, Some(0));
+}
+
+#[tokio::test]
+async fn stderr_is_preserved_when_wait_precedes_receiver_drain() {
+    let (handle, mut rx) = Command::new(child())
+        .args(["echo-lines", "only-stdout"])
+        .spawn()
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    handle.wait().await.unwrap();
+    let mut saw_stderr = false;
+    let mut last_terminated = false;
+    while let Some(event) = rx.recv().await {
+        match event {
+            ProcessEvent::Stderr(line) if line.contains("stderr-marker") => saw_stderr = true,
+            ProcessEvent::Terminated(_) => last_terminated = true,
+            _ => last_terminated = false,
+        }
+    }
+    assert!(
+        saw_stderr,
+        "tail stderr swallowed by finish() must be recovered as an event"
+    );
+    assert!(last_terminated, "Terminated must remain the final event");
+}
+
 // A receiver that keeps the channel open but never drains must not keep the
 // pump task alive forever. The single line fills the capacity-1 channel, so the
 // terminal flush cannot land; after the stall window the pump drops the terminal
