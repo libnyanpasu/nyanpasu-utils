@@ -210,10 +210,10 @@ async fn pump_exits_and_drops_terminated_when_receiver_never_drains() {
 
     assert!(
         closed,
-        "event channel never closed: pump task leaked under a non-draining receiver"
+        "event channel never closed: pump task leaked under a full, non-draining receiver"
     );
     assert!(
         !saw_terminated,
-        "Terminated must be dropped, not delivered, under a non-draining receiver"
+        "Terminated must be dropped, not delivered, under a full, non-draining receiver past the stall deadline"
     );
 }
