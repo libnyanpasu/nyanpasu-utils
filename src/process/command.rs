@@ -113,13 +113,16 @@ impl Command {
         self
     }
 
-    /// Spawns the child. `ProcessEvent::Terminated` is the final event.
+    /// Spawns the child. `ProcessEvent::Terminated`, when delivered, is the
+    /// final event on the channel; use [`super::handle::ProcessHandle::wait`]
+    /// for the authoritative termination signal.
     ///
     /// Event delivery applies backpressure: a full channel pauses the pump and
     /// pipe reads, and output beyond the engine's 256 KiB ring silently drops
     /// the oldest lines. Drain the receiver promptly. If a receiver stops
-    /// draining during termination, buffered output is dropped after five
-    /// seconds so [`super::handle::ProcessHandle::kill`],
+    /// draining during termination, buffered output — including the terminal
+    /// events — is dropped after five seconds so
+    /// [`super::handle::ProcessHandle::kill`],
     /// [`super::handle::ProcessHandle::graceful_kill`], and
     /// [`super::handle::ProcessHandle::wait`] remain live.
     pub async fn spawn(

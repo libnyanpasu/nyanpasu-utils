@@ -1,8 +1,11 @@
 //! Generic child-process management: spawn, event stream, kill, supervise.
 //!
 //! `processkit` is the internal engine and must not appear in any public signature
-//! (only `engine.rs` may import it). Event contract: [`ProcessEvent::Terminated`]
-//! is always the final event on the channel.
+//! (only `engine.rs` in the library imports it; the `containment_probe` example
+//! also uses it). Event ordering: [`ProcessEvent::Terminated`], when delivered,
+//! is the final event on the channel, but delivery is best-effort under a
+//! non-draining receiver — use [`ProcessHandle::wait`] as the authoritative
+//! termination signal.
 //!
 //! ```no_run
 //! use nyanpasu_utils::process::{Command, ProcessEvent};

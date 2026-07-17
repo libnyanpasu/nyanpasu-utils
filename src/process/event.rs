@@ -8,7 +8,11 @@ pub struct TerminatedPayload {
 
 /// Events delivered on the channel returned by [`crate::process::Command::spawn`].
 ///
-/// Contract: `Terminated` is always the final event on the channel.
+/// Ordering: when `Terminated` is delivered it is the final event on the
+/// channel. Delivery is best-effort — a receiver that stops draining during
+/// termination may never see `Terminated` (it is dropped after a short stall so
+/// the pump can exit). Use [`crate::process::ProcessHandle::wait`] for the
+/// authoritative termination signal.
 #[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum ProcessEvent {
