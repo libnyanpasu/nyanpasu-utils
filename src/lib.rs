@@ -19,3 +19,6 @@ pub mod os;
 
 #[cfg(feature = "network")]
 pub mod network;
+
+#[cfg(feature = "process")]
+pub mod process;
