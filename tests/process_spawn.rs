@@ -169,3 +169,51 @@ async fn kill_completes_when_event_receiver_stops_draining() {
         .expect("wait hung after kill")
         .unwrap();
 }
+
+// A receiver that keeps the channel open but never drains must not keep the
+// pump task alive forever. The single line fills the capacity-1 channel, so the
+// terminal flush cannot land; after the stall window the pump drops the terminal
+// events (Terminated included) and exits. wait() stays authoritative throughout.
+#[tokio::test]
+async fn pump_exits_and_drops_terminated_when_receiver_never_drains() {
+    let (handle, mut rx) = Command::new(child())
+        .args(["spam-stdout", "1"])
+        .event_channel_capacity(1)
+        .spawn()
+        .await
+        .unwrap();
+
+    // Never drain `rx`. wait() is the authoritative signal and returns even
+    // though the buffered line keeps the channel full.
+    tokio::time::timeout(Duration::from_secs(5), handle.wait())
+        .await
+        .expect("wait hung behind a non-draining receiver")
+        .unwrap();
+
+    // Stay idle past the terminal-flush stall window, then drain. The pump has
+    // already given up, so the channel closes and Terminated was dropped.
+    tokio::time::sleep(Duration::from_secs(8)).await;
+
+    let mut saw_terminated = false;
+    let mut closed = false;
+    loop {
+        match tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
+            Ok(Some(ProcessEvent::Terminated(_))) => saw_terminated = true,
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                closed = true;
+                break;
+            }
+            Err(_) => break,
+        }
+    }
+
+    assert!(
+        closed,
+        "event channel never closed: pump task leaked under a non-draining receiver"
+    );
+    assert!(
+        !saw_terminated,
+        "Terminated must be dropped, not delivered, under a non-draining receiver"
+    );
+}

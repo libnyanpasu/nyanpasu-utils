@@ -434,6 +434,12 @@ async fn pump(parts: PumpParts) {
     }
     terminal_events.push_back(ProcessEvent::Terminated(payload));
 
+    // wait() has already returned and the pid file is already cleaned, so the
+    // terminal events are the only thing left to deliver. A receiver that keeps
+    // the channel open but never drains would block `reserve()` forever and leak
+    // this task; bound the flush so it gives up after a stall with no progress
+    // (the deadline resets on every successful send).
+    let mut flush_deadline = Some(tokio::time::Instant::now() + DYING_EVENT_STALL);
     while events_open && !terminal_events.is_empty() {
         tokio::select! {
             biased;
@@ -455,9 +461,13 @@ async fn pump(parts: PumpParts) {
             }
             _ = ev_tx.closed() => events_open = false,
             permit = ev_tx.reserve() => match permit {
-                Ok(permit) => permit.send(terminal_events.pop_front().expect("terminal event")),
+                Ok(permit) => {
+                    permit.send(terminal_events.pop_front().expect("terminal event"));
+                    flush_deadline = Some(tokio::time::Instant::now() + DYING_EVENT_STALL);
+                }
                 Err(_) => events_open = false,
             },
+            _ = hard_kill_deadline(flush_deadline) => events_open = false,
         }
     }
 }
