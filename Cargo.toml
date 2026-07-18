@@ -41,7 +41,7 @@ log = { version = "0.4", optional = true }
 memchr = "2.7"
 os_pipe = { version = "1.2.0", optional = true }
 parking_lot = "0.12.3"
-processkit = { git = "https://github.com/ZelAnton/ProcessKit-rs", rev = "2adad322f1e3d7c471f3b9c8c625e44f356e416b", features = ["tracing"], optional = true }
+processkit = { git = "https://github.com/ZelAnton/ProcessKit-rs", rev = "4d1f9e222db92049057d869f505613532c97b39a", features = ["tracing"], optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 shared_child = { version = "1", optional = true }
 specta = { version = "^2.0.0-rc.22", features = ["derive"], optional = true }
