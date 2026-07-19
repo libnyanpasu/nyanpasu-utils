@@ -124,6 +124,12 @@ impl PidFileGuard {
                 expected_exe,
                 record,
             } => {
+                // The child is observable between group.start() and this
+                // identity-bound record publication. The manager sweeps stale
+                // `core-{epoch}.pid.tmp-*` files, but a hard kill inside this
+                // narrow pre-record interval can leave an orphan without an
+                // authoritative identity record; such a process is never
+                // killed on an unproven numeric PID.
                 let identity = wait_for_process_identity(pid).await?.ok_or_else(|| {
                     identity_error(format!("spawned pid {pid} disappeared before recording"))
                 })?;

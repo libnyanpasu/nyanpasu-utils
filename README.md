@@ -15,5 +15,9 @@ modules so the crate can be embedded in a larger monorepo without nested Cargo w
   supported Linux kernels. Other Unix targets immediately revalidate before a
   PID signal, with a documented residual PID-reuse window.
 
+Epoch record staging files are swept on the next manager startup. A narrow gap
+remains between process creation and identity-record publication; an orphan
+from that interval is deliberately not killed without authoritative identity.
+
 Default features preserve the existing public API. Consumers that need a smaller dependency surface
 can disable default features and enable only the modules they use.
