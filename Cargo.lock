@@ -636,6 +636,7 @@ dependencies = [
  "dirs",
  "encoding_rs",
  "kill_tree",
+ "libc",
  "log",
  "memchr",
  "nix 0.31.3",
