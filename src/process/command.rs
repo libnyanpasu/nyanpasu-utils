@@ -4,6 +4,13 @@ use std::{
     time::Duration,
 };
 
+use super::pid_file::EpochPidFile;
+
+pub(crate) enum PidFile {
+    Legacy(PathBuf),
+    Epoch(EpochPidFile),
+}
+
 /// Builder for spawning a managed child process. See module docs for the contract.
 pub struct Command {
     pub(crate) program: OsString,
@@ -16,7 +23,7 @@ pub struct Command {
     pub(crate) event_channel_capacity: usize,
     pub(crate) timeout: Option<Duration>,
     pub(crate) pipe_stdin: bool,
-    pub(crate) pid_file: Option<PathBuf>,
+    pub(crate) pid_file: Option<PidFile>,
 }
 
 impl Command {
@@ -107,9 +114,19 @@ impl Command {
         self
     }
 
-    /// Records the child pid at `path` for validated residual-process cleanup.
+    /// Records the child pid at `path` in the legacy numeric format.
+    ///
+    /// Numeric records cannot prove epoch/start identity and therefore do not
+    /// authorize residual-process killing. Use [`Command::epoch_pid_file`] when
+    /// post-crash orphan reaping is required.
     pub fn pid_file(mut self, path: impl Into<PathBuf>) -> Self {
-        self.pid_file = Some(path.into());
+        self.pid_file = Some(PidFile::Legacy(path.into()));
+        self
+    }
+
+    /// Records full per-epoch ownership for validated residual-process cleanup.
+    pub fn epoch_pid_file(mut self, spec: EpochPidFile) -> Self {
+        self.pid_file = Some(PidFile::Epoch(spec));
         self
     }
 
