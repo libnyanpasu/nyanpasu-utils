@@ -10,6 +10,10 @@ modules so the crate can be embedded in a larger monorepo without nested Cargo w
 - `io` and `runtime` — shared IO and Tokio runtime helpers
 - `network` — platform-specific network configuration (`network` feature)
 - `os` — operating-system and process helpers (`os` feature)
+- `process` — supervised children and versioned per-epoch PID records. Orphan
+  termination uses the same validated process handle on Windows and a pidfd on
+  supported Linux kernels. Other Unix targets immediately revalidate before a
+  PID signal, with a documented residual PID-reuse window.
 
 Default features preserve the existing public API. Consumers that need a smaller dependency surface
 can disable default features and enable only the modules they use.

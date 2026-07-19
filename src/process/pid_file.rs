@@ -7,7 +7,7 @@ use std::{
 
 use tokio::io::AsyncWriteExt;
 
-const EPOCH_PID_VERSION: u32 = 1;
+const EPOCH_PID_VERSION: u32 = 2;
 const IDENTITY_WAIT_ATTEMPTS: usize = 20;
 const IDENTITY_WAIT_DELAY: Duration = Duration::from_millis(25);
 const KILL_WAIT_ATTEMPTS: usize = 100;
@@ -199,6 +199,13 @@ pub async fn read_epoch_pid_file(path: impl AsRef<Path>) -> std::io::Result<Opti
 
 /// Kills the orphan in `path` only after validating the full epoch record and
 /// proving that both pid and runtime config are contained by `runtime_dir`.
+///
+/// Windows validates creation time and executable and terminates through the
+/// same process handle. Linux uses a pidfd plus a boot-bound `/proc` start
+/// token when the running kernel supports pidfds. Older Linux kernels and
+/// other Unix targets revalidate immediately before signaling; those fallback
+/// paths retain a minimal PID-reuse window because no portable process handle
+/// is available through the crate's supported APIs.
 pub async fn reap_epoch_pid_file(
     path: impl AsRef<Path>,
     runtime_dir: impl AsRef<Path>,
@@ -327,11 +334,7 @@ fn validate_record_for_spec(
 }
 
 async fn reap_record(record: &EpochPidRecord) -> std::io::Result<OrphanReapOutcome> {
-    let validator = [record.executable.to_lowercase()];
-    reap_record_with_kill(record, || {
-        crate::os::kill_pid(record.pid, Some(&validator))
-    })
-    .await
+    reap_record_with_kill(record, || kill_recorded_process(record)).await
 }
 
 async fn reap_record_with_kill<K, F>(
@@ -342,7 +345,7 @@ where
     K: FnOnce() -> F,
     F: std::future::Future<Output = std::io::Result<()>>,
 {
-    let Some(identity) = process_identity(record.pid)? else {
+    let Some(identity) = identity_for_reap(record.pid).await? else {
         return Ok(OrphanReapOutcome::AlreadyExited);
     };
     if !record_matches_identity(record, &identity) {
@@ -364,7 +367,7 @@ where
                 return Ok(OrphanReapOutcome::Killed);
             }
             Ok(Some(_)) => identity_error = None,
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(error) if identity_query_is_provisional(&error) => {
                 identity_error = Some(error);
             }
             Err(error) => return Err(error),
@@ -385,18 +388,64 @@ where
     ))
 }
 
-async fn wait_for_process_identity(pid: u32) -> std::io::Result<Option<ProcessIdentity>> {
+async fn identity_for_reap(pid: u32) -> std::io::Result<Option<ProcessIdentity>> {
+    let mut access_error = None;
     for attempt in 0..IDENTITY_WAIT_ATTEMPTS {
-        if let Some(identity) = process_identity(pid)? {
-            return Ok(Some(identity));
+        match process_identity(pid) {
+            Ok(identity) => return Ok(identity),
+            Err(error) if identity_query_is_provisional(&error) => {
+                access_error = Some(error);
+            }
+            Err(error) => return Err(error),
         }
         if attempt + 1 < IDENTITY_WAIT_ATTEMPTS {
             tokio::time::sleep(IDENTITY_WAIT_DELAY).await;
         }
     }
-    Ok(None)
+    Err(access_error.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("cannot inspect live pid {pid}"),
+        )
+    }))
 }
 
+fn identity_query_is_provisional(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        // Windows can surface these while an already-open process handle is
+        // transitioning to the terminated state.
+        matches!(error.raw_os_error(), Some(6 | 31 | 87 | 1168))
+    }
+    #[cfg(not(windows))]
+    false
+}
+
+async fn wait_for_process_identity(pid: u32) -> std::io::Result<Option<ProcessIdentity>> {
+    let mut access_error = None;
+    for attempt in 0..IDENTITY_WAIT_ATTEMPTS {
+        match process_identity(pid) {
+            Ok(Some(identity)) => return Ok(Some(identity)),
+            Ok(None) => {}
+            Err(error) if identity_query_is_provisional(&error) => {
+                access_error = Some(error);
+            }
+            Err(error) => return Err(error),
+        }
+        if attempt + 1 < IDENTITY_WAIT_ATTEMPTS {
+            tokio::time::sleep(IDENTITY_WAIT_DELAY).await;
+        }
+    }
+    match access_error {
+        Some(error) => Err(error),
+        None => Ok(None),
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
 fn process_identity(pid: u32) -> std::io::Result<Option<ProcessIdentity>> {
     use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System, UpdateKind};
 
@@ -416,6 +465,337 @@ fn process_identity(pid: u32) -> std::io::Result<Option<ProcessIdentity>> {
         executable: executable.to_owned(),
         start_token: process.start_time(),
     }))
+}
+
+#[cfg(target_os = "linux")]
+fn process_identity(pid: u32) -> std::io::Result<Option<ProcessIdentity>> {
+    let Some(first_ticks) = linux_start_ticks(pid)? else {
+        return Ok(None);
+    };
+    let executable_path = match std::fs::read_link(format!("/proc/{pid}/exe")) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let Some(second_ticks) = linux_start_ticks(pid)? else {
+        return Ok(None);
+    };
+    if first_ticks != second_ticks {
+        return Ok(None);
+    }
+    let executable = executable_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| identity_error(format!("cannot resolve executable for live pid {pid}")))?;
+    let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+    Ok(Some(ProcessIdentity {
+        executable: executable.to_owned(),
+        start_token: boot_bound_start_token(boot_id.trim(), first_ticks),
+    }))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_start_ticks(pid: u32) -> std::io::Result<Option<u64>> {
+    let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let command_end = stat
+        .rfind(')')
+        .ok_or_else(|| invalid_data(format!("malformed /proc/{pid}/stat")))?;
+    let ticks = stat[command_end + 1..]
+        .split_whitespace()
+        .nth(19)
+        .ok_or_else(|| invalid_data(format!("missing start time in /proc/{pid}/stat")))?
+        .parse()
+        .map_err(|_| invalid_data(format!("invalid start time in /proc/{pid}/stat")))?;
+    Ok(Some(ticks))
+}
+
+#[cfg(target_os = "linux")]
+fn boot_bound_start_token(boot_id: &str, ticks: u64) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in boot_id.bytes().chain(ticks.to_le_bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+#[cfg(windows)]
+fn process_identity(pid: u32) -> std::io::Result<Option<ProcessIdentity>> {
+    use windows::Win32::System::Threading::{
+        PROCESS_ACCESS_RIGHTS, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    const PROCESS_SYNCHRONIZE: PROCESS_ACCESS_RIGHTS = PROCESS_ACCESS_RIGHTS(0x0010_0000);
+
+    let handle = match open_process(
+        pid,
+        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+    ) {
+        Ok(handle) => handle,
+        Err(error) if error.raw_os_error() == Some(87) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    match process_identity_from_handle(&handle, pid) {
+        Ok(identity) => Ok(Some(identity)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(windows)]
+struct OwnedProcessHandle(windows::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for OwnedProcessHandle {
+    fn drop(&mut self) {
+        // SAFETY: this wrapper uniquely owns the handle returned by OpenProcess.
+        let _ = unsafe { windows::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
+
+#[cfg(windows)]
+fn open_process(
+    pid: u32,
+    access: windows::Win32::System::Threading::PROCESS_ACCESS_RIGHTS,
+) -> std::io::Result<OwnedProcessHandle> {
+    // SAFETY: pid and access flags are plain values; handle ownership is
+    // immediately transferred to OwnedProcessHandle.
+    unsafe { windows::Win32::System::Threading::OpenProcess(access, false, pid) }
+        .map(OwnedProcessHandle)
+        .map_err(windows_io_error)
+}
+
+#[cfg(windows)]
+fn process_identity_from_handle(
+    handle: &OwnedProcessHandle,
+    pid: u32,
+) -> std::io::Result<ProcessIdentity> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::{
+        Win32::{
+            Foundation::FILETIME,
+            System::Threading::{
+                GetProcessTimes, PROCESS_NAME_WIN32, QueryFullProcessImageNameW,
+            },
+        },
+        core::PWSTR,
+    };
+
+    if process_handle_is_terminated(handle)? {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("pid {pid} has terminated"),
+        ));
+    }
+
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    // SAFETY: all output pointers reference initialized writable FILETIME values.
+    unsafe {
+        GetProcessTimes(
+            handle.0,
+            &mut creation,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        )
+    }
+    .map_err(windows_io_error)?;
+
+    let mut executable = vec![0_u16; 32_768];
+    let mut len = executable.len() as u32;
+    // SAFETY: the buffer is writable for len UTF-16 code units and len remains
+    // live for the call.
+    unsafe {
+        QueryFullProcessImageNameW(
+            handle.0,
+            PROCESS_NAME_WIN32,
+            PWSTR(executable.as_mut_ptr()),
+            &mut len,
+        )
+    }
+    .map_err(windows_io_error)?;
+    let path = PathBuf::from(std::ffi::OsString::from_wide(&executable[..len as usize]));
+    let executable = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| identity_error(format!("cannot resolve executable for live pid {pid}")))?;
+    Ok(ProcessIdentity {
+        executable: executable.to_owned(),
+        start_token: (u64::from(creation.dwHighDateTime) << 32)
+            | u64::from(creation.dwLowDateTime),
+    })
+}
+
+#[cfg(windows)]
+fn process_handle_is_terminated(handle: &OwnedProcessHandle) -> std::io::Result<bool> {
+    use windows::Win32::{
+        Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT},
+        System::Threading::WaitForSingleObject,
+    };
+
+    // SAFETY: handle is live and a zero timeout performs a nonblocking query.
+    match unsafe { WaitForSingleObject(handle.0, 0) } {
+        WAIT_OBJECT_0 => Ok(true),
+        WAIT_TIMEOUT => Ok(false),
+        _ => Err(std::io::Error::last_os_error()),
+    }
+}
+
+#[cfg(windows)]
+fn windows_io_error(error: windows::core::Error) -> std::io::Error {
+    let code = error.code().0 as u32;
+    if code & 0xffff_0000 == 0x8007_0000 {
+        std::io::Error::from_raw_os_error((code & 0xffff) as i32)
+    } else {
+        std::io::Error::other(error)
+    }
+}
+
+#[cfg(windows)]
+async fn kill_recorded_process(record: &EpochPidRecord) -> std::io::Result<()> {
+    use windows::Win32::System::Threading::{
+        PROCESS_ACCESS_RIGHTS, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+        TerminateProcess,
+    };
+
+    const PROCESS_SYNCHRONIZE: PROCESS_ACCESS_RIGHTS = PROCESS_ACCESS_RIGHTS(0x0010_0000);
+
+    let handle = open_process(
+        record.pid,
+        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
+    )?;
+    let identity = process_identity_from_handle(&handle, record.pid)?;
+    if !record_matches_identity(record, &identity) {
+        return Err(identity_error(format!(
+            "cannot prove ownership of live pid {}",
+            record.pid
+        )));
+    }
+    // SAFETY: identity was read from this same open handle, which remains live
+    // for the termination call.
+    unsafe { TerminateProcess(handle.0, 1) }.map_err(windows_io_error)
+}
+
+#[cfg(target_os = "linux")]
+async fn kill_recorded_process(record: &EpochPidRecord) -> std::io::Result<()> {
+    let pidfd = match LinuxPidFd::open(record.pid) {
+        Ok(pidfd) => pidfd,
+        Err(error) if error.raw_os_error() == Some(libc::ENOSYS) => {
+            return kill_revalidated_by_pid(record);
+        }
+        Err(error) => return Err(error),
+    };
+    let identity = process_identity(record.pid)?.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("pid {} exited before pidfd validation", record.pid),
+        )
+    })?;
+    if !record_matches_identity(record, &identity) {
+        return Err(identity_error(format!(
+            "cannot prove ownership of live pid {}",
+            record.pid
+        )));
+    }
+    pidfd.kill()
+}
+
+#[cfg(target_os = "linux")]
+struct LinuxPidFd(std::os::fd::RawFd);
+
+#[cfg(target_os = "linux")]
+impl LinuxPidFd {
+    fn open(pid: u32) -> std::io::Result<Self> {
+        // SAFETY: pidfd_open receives a numeric pid and zero flags.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0_u32) };
+        if fd < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(Self(fd as std::os::fd::RawFd))
+        }
+    }
+
+    fn kill(&self) -> std::io::Result<()> {
+        // SAFETY: self.0 is a live pidfd and the optional siginfo pointer is null.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                self.0,
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0_u32,
+            )
+        };
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for LinuxPidFd {
+    fn drop(&mut self) {
+        // SAFETY: self uniquely owns this pidfd.
+        unsafe { libc::close(self.0) };
+    }
+}
+
+#[cfg(unix)]
+fn kill_revalidated_by_pid(record: &EpochPidRecord) -> std::io::Result<()> {
+    let identity = process_identity(record.pid)?.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("pid {} exited before final validation", record.pid),
+        )
+    })?;
+    if !record_matches_identity(record, &identity) {
+        return Err(identity_error(format!(
+            "cannot prove ownership of live pid {}",
+            record.pid
+        )));
+    }
+    // SAFETY: the exact identity was revalidated immediately before signaling.
+    if unsafe { libc::kill(record.pid as libc::pid_t, libc::SIGKILL) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+async fn kill_recorded_process(record: &EpochPidRecord) -> std::io::Result<()> {
+    kill_revalidated_by_pid(record)
+}
+
+#[cfg(not(any(unix, windows)))]
+async fn kill_recorded_process(record: &EpochPidRecord) -> std::io::Result<()> {
+    let identity = process_identity(record.pid)?.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("pid {} exited before final validation", record.pid),
+        )
+    })?;
+    if !record_matches_identity(record, &identity) {
+        return Err(identity_error(format!(
+            "cannot prove ownership of live pid {}",
+            record.pid
+        )));
+    }
+    crate::os::kill_pid::<String>(record.pid, None).await
 }
 
 fn record_matches_identity(record: &EpochPidRecord, identity: &ProcessIdentity) -> bool {

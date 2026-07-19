@@ -48,6 +48,7 @@ tempfile = "3"
 test-log = "0.2"
 
 [target."cfg(unix)".dependencies]
+libc = { version = "0.2", optional = true }
 nix = {
   version = "0.31.0",
   features = ["process", "signal", "user"],
@@ -85,6 +86,6 @@ os = [
   "dep:sysinfo",
   "dep:windows",
 ]
-process = ["dep:encoding_rs", "dep:processkit", "dep:tokio-util", "os"]
+process = ["dep:encoding_rs", "dep:libc", "dep:processkit", "dep:tokio-util", "os"]
 serde = ["dep:serde"]
 specta = ["dep:specta"]
