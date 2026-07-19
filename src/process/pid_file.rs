@@ -978,12 +978,29 @@ async fn write_epoch_record(path: &Path, record: &EpochPidRecord) -> std::io::Re
         file.flush().await?;
         file.sync_all().await?;
         drop(file);
-        tokio::fs::rename(&temp, path).await
+        // Publish via hard_link rather than rename: `link(2)` on Unix and
+        // `CreateHardLinkW` on Windows both fail atomically (EEXIST /
+        // AlreadyExists) if the destination already exists, unlike rename
+        // which silently replaces it. This closes the TOCTOU window between
+        // the `try_exists` check above and publication. hard_link requires
+        // the same volume, which is guaranteed here because `temp` is staged
+        // in the same directory as `path`.
+        tokio::fs::hard_link(&temp, path).await.map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("pid file unexpectedly exists: {}", path.display()),
+                )
+            } else {
+                error
+            }
+        })
     }
     .await;
-    if result.is_err() {
-        let _ = tokio::fs::remove_file(&temp).await;
-    }
+    // Unlike rename, a successful hard_link leaves `temp` in place as a
+    // second name for the same file, so the staging file must be removed on
+    // both the success and failure paths.
+    let _ = tokio::fs::remove_file(&temp).await;
     result
 }
 
@@ -1144,6 +1161,39 @@ mod tests {
             parse_epoch_record(&serialize_epoch_record(&record).unwrap()).unwrap(),
             record
         );
+    }
+
+    #[tokio::test]
+    async fn write_epoch_record_second_publish_does_not_clobber_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("core-1.pid");
+        let first = EpochPidRecord {
+            pid: 111,
+            epoch: 1,
+            executable: "first.exe".into(),
+            start_token: 1,
+            runtime_config: dir.path().join("config-1.yaml"),
+        };
+        let second = EpochPidRecord {
+            pid: 222,
+            epoch: 1,
+            executable: "second.exe".into(),
+            start_token: 2,
+            runtime_config: dir.path().join("config-1.yaml"),
+        };
+
+        write_epoch_record(&pid_path, &first).await.unwrap();
+
+        let error = write_epoch_record(&pid_path, &second)
+            .await
+            .expect_err("publishing over an existing epoch record must fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+
+        // The destination must still contain the first record: a rename-based
+        // publish would have silently replaced it (the TOCTOU this guards
+        // against), while hard_link fails atomically without touching it.
+        let raw = tokio::fs::read_to_string(&pid_path).await.unwrap();
+        assert_eq!(parse_epoch_record(&raw).unwrap(), first);
     }
 
     #[test]
