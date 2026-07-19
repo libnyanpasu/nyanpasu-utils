@@ -30,6 +30,12 @@ async fn main() {
             println!("ready");
             sleep_forever().await;
         }
+        "sleep-then-exit" => {
+            let delay_ms: u64 = args.next().expect("milliseconds").parse().expect("u64");
+            let code: i32 = args.next().expect("code").parse().expect("i32");
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            std::process::exit(code);
+        }
         "trap-term" => {
             #[cfg(unix)]
             {

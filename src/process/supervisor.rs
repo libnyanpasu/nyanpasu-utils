@@ -1,7 +1,8 @@
 use std::{
+    collections::VecDeque,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -28,6 +29,29 @@ type ProcessEventHook = Arc<dyn Fn(ProcessEvent) + Send + Sync>;
 pub enum RestartPolicy {
     Never,
     OnFailure { max_restarts: u32 },
+}
+
+/// Bounds abnormal child exits even when readiness repeatedly resets the
+/// consecutive restart attempt count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestartStormPolicy {
+    max_failures: u32,
+    window: Duration,
+}
+
+impl RestartStormPolicy {
+    pub fn new(max_failures: u32, window: Duration) -> Self {
+        Self {
+            max_failures: max_failures.max(1),
+            window: window.max(Duration::from_millis(1)),
+        }
+    }
+}
+
+impl Default for RestartStormPolicy {
+    fn default() -> Self {
+        Self::new(5, Duration::from_secs(5 * 60))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -86,15 +110,17 @@ impl Backoff {
 
 /// Defines when a running child is considered ready.
 ///
-/// Passing readiness resets the restart attempt budget, so a crash after the
-/// window starts a fresh budget, matching legacy `recover_core` behavior. A
-/// storm guard or sliding-window policy may be added in the future.
+/// Passing readiness resets the consecutive restart attempt budget, but does
+/// not clear the independent restart-storm window.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum ReadinessProbe {
     /// Emit `Ready` if the child is still alive after this delay
     /// (successor of the legacy 1.5s `DelayCheckpointPass`, design §5.3).
     AliveAfter(Duration),
+    /// Readiness is acknowledged explicitly through
+    /// [`Supervisor::acknowledge_ready`].
+    Acknowledged,
 }
 
 #[non_exhaustive]
@@ -113,6 +139,7 @@ pub struct SupervisorBuilder {
     policy: RestartPolicy,
     backoff: Backoff,
     readiness: ReadinessProbe,
+    storm_policy: RestartStormPolicy,
     on_event: Option<EventHook>,
     on_process_event: Option<ProcessEventHook>,
     cancel_token: Option<CancellationToken>,
@@ -126,6 +153,8 @@ pub struct SupervisorBuilder {
 pub struct Supervisor {
     token: CancellationToken,
     current: Arc<tokio::sync::Mutex<Option<ProcessHandle>>>,
+    ready_tx: tokio::sync::mpsc::UnboundedSender<u32>,
+    ready_pending: Arc<AtomicU32>,
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -151,9 +180,35 @@ impl Supervisor {
             backoff: Backoff::exponential(Duration::from_secs(1), Duration::from_secs(30))
                 .with_jitter(),
             readiness: ReadinessProbe::AliveAfter(Duration::from_millis(1500)),
+            storm_policy: RestartStormPolicy::default(),
             on_event: None,
             on_process_event: None,
             cancel_token: None,
+        }
+    }
+
+    /// Marks the current child ready if `pid` still identifies that child.
+    /// Stale or already-terminated PIDs are ignored.
+    pub async fn acknowledge_ready(&self, pid: u32) -> bool {
+        let is_current = self
+            .current
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|handle| handle.pid() == pid && handle.terminated.borrow().is_none());
+        if !is_current
+            || self
+                .ready_pending
+                .compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+        {
+            return false;
+        }
+        if self.ready_tx.send(pid).is_ok() {
+            true
+        } else {
+            self.ready_pending.store(pid, Ordering::SeqCst);
+            false
         }
     }
 
@@ -197,6 +252,11 @@ impl SupervisorBuilder {
         self
     }
 
+    pub fn restart_storm_policy(mut self, policy: RestartStormPolicy) -> Self {
+        self.storm_policy = policy;
+        self
+    }
+
     /// Registers a supervisor-event hook.
     ///
     /// The hook runs inline on the supervision loop, so it must be cheap and
@@ -227,8 +287,8 @@ impl SupervisorBuilder {
     /// The first spawn happens before this method returns, so its failure is
     /// returned directly. Each successful spawn emits [`SupervisorEvent::Started`]
     /// and forwards all child [`ProcessEvent`] values to the process hook. A child
-    /// surviving [`ReadinessProbe::AliveAfter`] emits [`SupervisorEvent::Ready`]
-    /// and resets the restart attempt. Each exit emits [`SupervisorEvent::Exited`];
+    /// passing the configured readiness probe emits [`SupervisorEvent::Ready`]
+    /// and resets the consecutive restart attempt. Each exit emits [`SupervisorEvent::Exited`];
     /// exit code zero ends the loop without a restart. Other exits and later spawn
     /// failures consume the restart budget and emit [`SupervisorEvent::Restarting`]
     /// after the configured backoff, or [`SupervisorEvent::GaveUp`] when exhausted.
@@ -246,6 +306,8 @@ impl SupervisorBuilder {
         }
         let token = self.cancel_token.unwrap_or_default().child_token();
         let current: Arc<tokio::sync::Mutex<Option<ProcessHandle>>> = Arc::default();
+        let (ready_tx, mut ready_rx) = tokio::sync::mpsc::unbounded_channel();
+        let ready_pending = Arc::new(AtomicU32::new(0));
         let emit = {
             let hook = self.on_event.clone();
             move |event: SupervisorEvent| {
@@ -256,27 +318,36 @@ impl SupervisorBuilder {
         };
 
         let (first_handle, first_rx) = (self.factory)().spawn().await?;
-        emit(SupervisorEvent::Started {
-            pid: first_handle.pid(),
-        });
+        let first_pid = first_handle.pid();
+        if matches!(self.readiness, ReadinessProbe::Acknowledged) {
+            ready_pending.store(first_pid, Ordering::SeqCst);
+        }
+        emit(SupervisorEvent::Started { pid: first_pid });
         *current.lock().await = Some(first_handle);
 
         let factory = self.factory;
         let policy = self.policy;
         let backoff = self.backoff;
         let readiness = self.readiness;
+        let storm_policy = self.storm_policy;
         let on_process_event = self.on_process_event;
         let token_ = token.clone();
         let current_ = current.clone();
+        let ready_pending_ = ready_pending.clone();
 
         let task = tokio::spawn(async move {
             let mut attempt = 0;
             let mut next_rx = Some(first_rx);
+            let mut abnormal_exits = VecDeque::new();
 
             loop {
                 if let Some(mut rx) = next_rx.take() {
-                    let ReadinessProbe::AliveAfter(ready_delay) = readiness;
-                    let ready_at = tokio::time::Instant::now() + ready_delay;
+                    let (ready_at, acknowledged) = match readiness {
+                        ReadinessProbe::AliveAfter(delay) => {
+                            (tokio::time::Instant::now() + delay, false)
+                        }
+                        ReadinessProbe::Acknowledged => (tokio::time::Instant::now(), true),
+                    };
                     let mut readiness_pending = true;
                     let mut cancelled = false;
                     let mut kill_task = None;
@@ -293,7 +364,7 @@ impl SupervisorBuilder {
                                     }));
                                 }
                             }
-                            _ = tokio::time::sleep_until(ready_at), if readiness_pending => {
+                            _ = tokio::time::sleep_until(ready_at), if readiness_pending && !acknowledged => {
                                 readiness_pending = false;
                                 let child_is_alive = current_
                                     .lock()
@@ -301,6 +372,25 @@ impl SupervisorBuilder {
                                     .as_ref()
                                     .is_some_and(|handle| handle.terminated.borrow().is_none());
                                 if child_is_alive && !token_.is_cancelled() {
+                                    attempt = 0;
+                                    emit(SupervisorEvent::Ready);
+                                }
+                            }
+                            maybe_pid = ready_rx.recv(), if readiness_pending && acknowledged => {
+                                let Some(pid) = maybe_pid else {
+                                    readiness_pending = false;
+                                    continue;
+                                };
+                                let child_is_current_and_alive = current_
+                                    .lock()
+                                    .await
+                                    .as_ref()
+                                    .is_some_and(|handle| {
+                                        handle.pid() == pid
+                                            && handle.terminated.borrow().is_none()
+                                    });
+                                if child_is_current_and_alive && !token_.is_cancelled() {
+                                    readiness_pending = false;
                                     attempt = 0;
                                     emit(SupervisorEvent::Ready);
                                 }
@@ -326,6 +416,7 @@ impl SupervisorBuilder {
                         let _ = task.await;
                     }
                     current_.lock().await.take();
+                    ready_pending_.store(0, Ordering::SeqCst);
                     let clean_exit = payload.code == Some(0);
                     emit(SupervisorEvent::Exited(payload));
 
@@ -334,6 +425,19 @@ impl SupervisorBuilder {
                         return;
                     }
                     if clean_exit || matches!(policy, RestartPolicy::Never) {
+                        return;
+                    }
+
+                    let now = tokio::time::Instant::now();
+                    abnormal_exits.push_back(now);
+                    while abnormal_exits
+                        .front()
+                        .is_some_and(|at| now.duration_since(*at) > storm_policy.window)
+                    {
+                        abnormal_exits.pop_front();
+                    }
+                    if abnormal_exits.len() >= storm_policy.max_failures as usize {
+                        emit(SupervisorEvent::GaveUp);
                         return;
                     }
                 } else if token_.is_cancelled() {
@@ -372,6 +476,9 @@ impl SupervisorBuilder {
                         *current_.lock().await = Some(handle);
                         next_rx = Some(rx);
                         if !token_.is_cancelled() {
+                            if matches!(readiness, ReadinessProbe::Acknowledged) {
+                                ready_pending_.store(pid, Ordering::SeqCst);
+                            }
                             emit(SupervisorEvent::Started { pid });
                         }
                     }
@@ -385,6 +492,8 @@ impl SupervisorBuilder {
         Ok(Supervisor {
             token,
             current,
+            ready_tx,
+            ready_pending,
             task: Some(task),
         })
     }

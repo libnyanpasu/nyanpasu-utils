@@ -6,7 +6,7 @@ use processkit::prelude::StreamExt;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use super::{
-    command::Command,
+    command::{Command, PidFile},
     error::ProcessError,
     event::{ProcessEvent, TerminatedPayload},
     handle::{Containment, Ctrl},
@@ -238,13 +238,25 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
     let kill_grace = cmd.kill_grace;
     let pipe_stdin = cmd.pipe_stdin;
     let timeout = cmd.timeout;
+    let epoch_pid_required = matches!(&cmd.pid_file, Some(PidFile::Epoch(_)));
+    let expected_exe = std::path::Path::new(&cmd.program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned);
     let pid_guard = match &cmd.pid_file {
-        Some(path) => {
-            let expected_exe = std::path::Path::new(&cmd.program)
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned());
-            Some(PidFileGuard::prepare(path.clone(), expected_exe).await?)
-        }
+        Some(PidFile::Legacy(path)) => Some(PidFileGuard::prepare_legacy(path.clone()).await?),
+        Some(PidFile::Epoch(spec)) => Some(
+            PidFileGuard::prepare_epoch(
+                spec.clone(),
+                expected_exe.ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "epoch pid records require a UTF-8 executable basename",
+                    )
+                })?,
+            )
+            .await?,
+        ),
         None => None,
     };
     // A shared-group RunningProcess only times out its direct child. The pump
@@ -266,6 +278,11 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
     if let Some(g) = &pid_guard
         && let Err(e) = g.write(pid).await
     {
+        if epoch_pid_required {
+            let _ = group.kill_all();
+            let _ = run.finish().await;
+            return Err(ProcessError::Io(e));
+        }
         tracing::warn!("failed to write pid file: {e}");
     }
     let stdin_tx = if pipe_stdin {
