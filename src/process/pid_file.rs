@@ -327,6 +327,21 @@ fn validate_record_for_spec(
 }
 
 async fn reap_record(record: &EpochPidRecord) -> std::io::Result<OrphanReapOutcome> {
+    let validator = [record.executable.to_lowercase()];
+    reap_record_with_kill(record, || {
+        crate::os::kill_pid(record.pid, Some(&validator))
+    })
+    .await
+}
+
+async fn reap_record_with_kill<K, F>(
+    record: &EpochPidRecord,
+    kill: K,
+) -> std::io::Result<OrphanReapOutcome>
+where
+    K: FnOnce() -> F,
+    F: std::future::Future<Output = std::io::Result<()>>,
+{
     let Some(identity) = process_identity(record.pid)? else {
         return Ok(OrphanReapOutcome::AlreadyExited);
     };
@@ -337,16 +352,32 @@ async fn reap_record(record: &EpochPidRecord) -> std::io::Result<OrphanReapOutco
         )));
     }
 
-    let validator = [record.executable.to_lowercase()];
-    crate::os::kill_pid(record.pid, Some(&validator)).await?;
-    for _ in 0..KILL_WAIT_ATTEMPTS {
-        match process_identity(record.pid)? {
-            None => return Ok(OrphanReapOutcome::Killed),
-            Some(identity) if !record_matches_identity(record, &identity) => {
+    // Windows may report access denied when termination is already in flight.
+    // A kill error is therefore provisional until the bounded identity window
+    // proves that this exact process survived it.
+    let kill_error = kill().await.err();
+    let mut identity_error = None;
+    for attempt in 0..KILL_WAIT_ATTEMPTS {
+        match process_identity(record.pid) {
+            Ok(None) => return Ok(OrphanReapOutcome::Killed),
+            Ok(Some(identity)) if !record_matches_identity(record, &identity) => {
                 return Ok(OrphanReapOutcome::Killed);
             }
-            Some(_) => tokio::time::sleep(KILL_WAIT_DELAY).await,
+            Ok(Some(_)) => identity_error = None,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                identity_error = Some(error);
+            }
+            Err(error) => return Err(error),
         }
+        if attempt + 1 < KILL_WAIT_ATTEMPTS {
+            tokio::time::sleep(KILL_WAIT_DELAY).await;
+        }
+    }
+    if let Some(error) = kill_error {
+        return Err(error);
+    }
+    if let Some(error) = identity_error.take() {
+        return Err(error);
     }
     Err(std::io::Error::new(
         std::io::ErrorKind::TimedOut,
@@ -594,5 +625,42 @@ mod tests {
             parse_epoch_record(&serialize_epoch_record(&record).unwrap()).unwrap(),
             record
         );
+    }
+
+    #[tokio::test]
+    async fn kill_failure_is_ignored_only_after_recorded_identity_disappears() {
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("cmd")
+            .args(["/D", "/S", "/C", "ping -n 30 127.0.0.1 >NUL"])
+            .spawn()
+            .unwrap();
+        #[cfg(unix)]
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 30"])
+            .spawn()
+            .unwrap();
+
+        let pid = child.id();
+        let identity = wait_for_process_identity(pid).await.unwrap().unwrap();
+        let record = EpochPidRecord {
+            pid,
+            epoch: 1,
+            executable: identity.executable,
+            start_token: identity.start_token,
+            runtime_config: PathBuf::from("config-1.yaml"),
+        };
+
+        let outcome = reap_record_with_kill(&record, || async move {
+            crate::os::kill_pid::<String>(pid, None).await?;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated already-terminating process",
+            ))
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, OrphanReapOutcome::Killed);
+        let _ = child.wait();
     }
 }
