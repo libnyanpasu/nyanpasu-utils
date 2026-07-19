@@ -216,8 +216,9 @@ pub async fn read_epoch_pid_file(path: impl AsRef<Path>) -> std::io::Result<Opti
 /// Live descendants are captured before the recorded root is killed, and each
 /// captured process is killed only while its own executable and start token
 /// still match. Descendants that reparent or exit before the two enumeration
-/// snapshots cannot be attributed to the epoch and are deliberately not
-/// killed; persistent group/job identity would be required to close that gap.
+/// snapshots observe them cannot be attributed to the epoch and are
+/// deliberately not killed; persistent group/job identity would be required
+/// to close that gap.
 pub async fn reap_epoch_pid_file(
     path: impl AsRef<Path>,
     runtime_dir: impl AsRef<Path>,
@@ -356,7 +357,7 @@ async fn reap_record(record: &EpochPidRecord) -> std::io::Result<OrphanReapOutco
         )));
     }
 
-    let descendants = capture_descendants(record.pid)?;
+    let descendants = capture_descendants(record.pid);
     let root_outcome = reap_record_with_kill(record, false, || kill_recorded_process(record)).await?;
     let mut killed_descendant = false;
     let mut failures = Vec::new();
@@ -393,18 +394,19 @@ async fn reap_record(record: &EpochPidRecord) -> std::io::Result<OrphanReapOutco
 
 async fn reap_record_with_kill<K, F>(
     record: &EpochPidRecord,
-    identity_mismatch_is_dead: bool,
+    unowned_is_dead: bool,
     kill: K,
 ) -> std::io::Result<OrphanReapOutcome>
 where
     K: FnOnce() -> F,
     F: std::future::Future<Output = std::io::Result<()>>,
 {
-    let Some(identity) = identity_for_reap(record.pid).await? else {
+    let identity = identity_for_confirmation(identity_for_reap(record.pid).await, unowned_is_dead)?;
+    let Some(identity) = identity else {
         return Ok(OrphanReapOutcome::AlreadyExited);
     };
     if !record_matches_identity(record, &identity) {
-        if identity_mismatch_is_dead {
+        if unowned_is_dead {
             return Ok(OrphanReapOutcome::AlreadyExited);
         }
         return Err(identity_error(format!(
@@ -426,8 +428,12 @@ where
             }
             Ok(Some(_)) => identity_error = None,
             Err(error) if identity_query_is_provisional(&error) => {
+                if unowned_is_dead {
+                    return Ok(OrphanReapOutcome::Killed);
+                }
                 identity_error = Some(error);
             }
+            Err(_) if unowned_is_dead => return Ok(OrphanReapOutcome::Killed),
             Err(error) => return Err(error),
         }
         if attempt + 1 < KILL_WAIT_ATTEMPTS {
@@ -446,38 +452,64 @@ where
     ))
 }
 
+fn identity_for_confirmation(
+    result: std::io::Result<Option<ProcessIdentity>>,
+    unowned_is_dead: bool,
+) -> std::io::Result<Option<ProcessIdentity>> {
+    match result {
+        Ok(identity) => Ok(identity),
+        Err(_) if unowned_is_dead => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 #[derive(Debug)]
 struct CapturedDescendant {
     pid: u32,
     identity: ProcessIdentity,
 }
 
-fn capture_descendants(root_pid: u32) -> std::io::Result<Vec<CapturedDescendant>> {
+fn capture_descendants(root_pid: u32) -> Vec<CapturedDescendant> {
     let first = descendant_pids(root_pid);
     let mut first_identities = BTreeMap::new();
     for pid in first {
-        if let Some(identity) = process_identity(pid)? {
+        if let Some(identity) = attributable_identity(process_identity(pid)) {
             first_identities.insert(pid, identity);
         }
     }
 
     let second = descendant_pids(root_pid);
-    let mut descendants = Vec::new();
+    let mut second_identities = BTreeMap::new();
     for pid in second {
-        let Some(first_identity) = first_identities.remove(&pid) else {
-            continue;
-        };
-        let Some(second_identity) = process_identity(pid)? else {
-            continue;
-        };
-        if first_identity == second_identity {
-            descendants.push(CapturedDescendant {
-                pid,
-                identity: second_identity,
-            });
+        second_identities.insert(pid, attributable_identity(process_identity(pid)));
+    }
+    merge_descendant_captures(first_identities, second_identities)
+}
+
+fn attributable_identity(
+    result: std::io::Result<Option<ProcessIdentity>>,
+) -> Option<ProcessIdentity> {
+    result.ok().flatten()
+}
+
+fn merge_descendant_captures(
+    mut captured: BTreeMap<u32, ProcessIdentity>,
+    second: BTreeMap<u32, Option<ProcessIdentity>>,
+) -> Vec<CapturedDescendant> {
+    for (pid, identity) in second {
+        match identity {
+            Some(identity) => {
+                captured.insert(pid, identity);
+            }
+            None => {
+                captured.remove(&pid);
+            }
         }
     }
-    Ok(descendants)
+    captured
+        .into_iter()
+        .map(|(pid, identity)| CapturedDescendant { pid, identity })
+        .collect()
 }
 
 fn descendant_pids(root_pid: u32) -> BTreeSet<u32> {
@@ -1123,6 +1155,61 @@ mod tests {
         assert_eq!(
             parse_epoch_record(&serialize_epoch_record(&record).unwrap()).unwrap(),
             record
+        );
+    }
+
+    #[test]
+    fn second_snapshot_only_descendant_is_captured() {
+        let late_identity = ProcessIdentity {
+            executable: "late-child".into(),
+            start_token: 22,
+        };
+        let captured = merge_descendant_captures(
+            BTreeMap::new(),
+            [(22, Some(late_identity.clone()))].into(),
+        );
+
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].pid, 22);
+        assert_eq!(captured[0].identity, late_identity);
+    }
+
+    #[test]
+    fn unreadable_second_snapshot_identity_is_not_attributed() {
+        let first_identity = ProcessIdentity {
+            executable: "old-child".into(),
+            start_token: 7,
+        };
+        let captured = merge_descendant_captures(
+            [(7, first_identity)].into(),
+            [(
+                7,
+                attributable_identity(Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "simulated recycled foreign process",
+                ))),
+            )]
+            .into(),
+        );
+
+        assert!(captured.is_empty());
+    }
+
+    #[test]
+    fn unreadable_descendant_confirmation_counts_as_unowned() {
+        let error = || {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated recycled foreign process",
+            ))
+        };
+
+        assert!(identity_for_confirmation(error(), true).unwrap().is_none());
+        assert_eq!(
+            identity_for_confirmation(error(), false)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
         );
     }
 
