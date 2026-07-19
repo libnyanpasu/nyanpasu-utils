@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
     time::Duration,
@@ -212,6 +212,12 @@ pub async fn read_epoch_pid_file(path: impl AsRef<Path>) -> std::io::Result<Opti
 /// other Unix targets revalidate immediately before signaling; those fallback
 /// paths retain a minimal PID-reuse window because no portable process handle
 /// is available through the crate's supported APIs.
+///
+/// Live descendants are captured before the recorded root is killed, and each
+/// captured process is killed only while its own executable and start token
+/// still match. Descendants that reparent or exit before the two enumeration
+/// snapshots cannot be attributed to the epoch and are deliberately not
+/// killed; persistent group/job identity would be required to close that gap.
 pub async fn reap_epoch_pid_file(
     path: impl AsRef<Path>,
     runtime_dir: impl AsRef<Path>,
@@ -340,11 +346,54 @@ fn validate_record_for_spec(
 }
 
 async fn reap_record(record: &EpochPidRecord) -> std::io::Result<OrphanReapOutcome> {
-    reap_record_with_kill(record, || kill_recorded_process(record)).await
+    let Some(identity) = identity_for_reap(record.pid).await? else {
+        return Ok(OrphanReapOutcome::AlreadyExited);
+    };
+    if !record_matches_identity(record, &identity) {
+        return Err(identity_error(format!(
+            "cannot prove ownership of live pid {}",
+            record.pid
+        )));
+    }
+
+    let descendants = capture_descendants(record.pid)?;
+    let root_outcome = reap_record_with_kill(record, false, || kill_recorded_process(record)).await?;
+    let mut killed_descendant = false;
+    let mut failures = Vec::new();
+    for descendant in descendants {
+        let descendant_record = EpochPidRecord {
+            pid: descendant.pid,
+            epoch: record.epoch,
+            executable: descendant.identity.executable,
+            start_token: descendant.identity.start_token,
+            runtime_config: record.runtime_config.clone(),
+        };
+        match reap_record_with_kill(&descendant_record, true, || {
+            kill_recorded_process(&descendant_record)
+        })
+        .await
+        {
+            Ok(OrphanReapOutcome::Killed) => killed_descendant = true,
+            Ok(OrphanReapOutcome::AlreadyExited | OrphanReapOutcome::NotFound) => {}
+            Err(error) => failures.push(format!("pid {}: {error}", descendant_record.pid)),
+        }
+    }
+    if !failures.is_empty() {
+        return Err(std::io::Error::other(format!(
+            "failed to confirm death of captured descendants: {}",
+            failures.join("; ")
+        )));
+    }
+    if killed_descendant {
+        Ok(OrphanReapOutcome::Killed)
+    } else {
+        Ok(root_outcome)
+    }
 }
 
 async fn reap_record_with_kill<K, F>(
     record: &EpochPidRecord,
+    identity_mismatch_is_dead: bool,
     kill: K,
 ) -> std::io::Result<OrphanReapOutcome>
 where
@@ -355,6 +404,9 @@ where
         return Ok(OrphanReapOutcome::AlreadyExited);
     };
     if !record_matches_identity(record, &identity) {
+        if identity_mismatch_is_dead {
+            return Ok(OrphanReapOutcome::AlreadyExited);
+        }
         return Err(identity_error(format!(
             "cannot prove ownership of live pid {}",
             record.pid
@@ -392,6 +444,67 @@ where
         std::io::ErrorKind::TimedOut,
         format!("pid {} remained alive after validated kill", record.pid),
     ))
+}
+
+#[derive(Debug)]
+struct CapturedDescendant {
+    pid: u32,
+    identity: ProcessIdentity,
+}
+
+fn capture_descendants(root_pid: u32) -> std::io::Result<Vec<CapturedDescendant>> {
+    let first = descendant_pids(root_pid);
+    let mut first_identities = BTreeMap::new();
+    for pid in first {
+        if let Some(identity) = process_identity(pid)? {
+            first_identities.insert(pid, identity);
+        }
+    }
+
+    let second = descendant_pids(root_pid);
+    let mut descendants = Vec::new();
+    for pid in second {
+        let Some(first_identity) = first_identities.remove(&pid) else {
+            continue;
+        };
+        let Some(second_identity) = process_identity(pid)? else {
+            continue;
+        };
+        if first_identity == second_identity {
+            descendants.push(CapturedDescendant {
+                pid,
+                identity: second_identity,
+            });
+        }
+    }
+    Ok(descendants)
+}
+
+fn descendant_pids(root_pid: u32) -> BTreeSet<u32> {
+    use sysinfo::{Pid, System};
+
+    let system = System::new_all();
+    let mut children = BTreeMap::<Pid, Vec<Pid>>::new();
+    for (pid, process) in system.processes() {
+        if let Some(parent) = process.parent() {
+            children.entry(parent).or_default().push(*pid);
+        }
+    }
+
+    let mut descendants = BTreeSet::new();
+    let mut pending = vec![Pid::from_u32(root_pid)];
+    while let Some(parent) = pending.pop() {
+        let Some(direct) = children.get(&parent) else {
+            continue;
+        };
+        for pid in direct {
+            let pid = pid.as_u32();
+            if descendants.insert(pid) {
+                pending.push(Pid::from_u32(pid));
+            }
+        }
+    }
+    descendants
 }
 
 async fn identity_for_reap(pid: u32) -> std::io::Result<Option<ProcessIdentity>> {
@@ -1036,7 +1149,7 @@ mod tests {
             runtime_config: PathBuf::from("config-1.yaml"),
         };
 
-        let outcome = reap_record_with_kill(&record, || async move {
+        let outcome = reap_record_with_kill(&record, false, || async move {
             crate::os::kill_pid::<String>(pid, None).await?;
             Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,

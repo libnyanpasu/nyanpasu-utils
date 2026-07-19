@@ -207,6 +207,44 @@ async fn validated_orphan_reap_kills_matching_epoch_record() {
 }
 
 #[tokio::test]
+async fn validated_orphan_reap_kills_captured_descendant_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid_path = dir.path().join("core-10.pid");
+    let runtime_path = dir.path().join("config-10.yaml");
+    std::fs::write(&runtime_path, "mixed-port: 0\n").unwrap();
+    let (handle, mut events) = Command::new(child())
+        .args(["spawn-grandchild"])
+        .epoch_pid_file(EpochPidFile::new(&pid_path, 10, &runtime_path))
+        .spawn()
+        .await
+        .unwrap();
+    let root_pid = handle.pid();
+    let grandchild_pid = loop {
+        match events.recv().await.expect("parent event") {
+            ProcessEvent::Stdout(line) => {
+                if let Some(pid) = line.strip_prefix("grandchild-pid:") {
+                    break pid.parse::<u32>().unwrap();
+                }
+            }
+            ProcessEvent::Terminated(status) => panic!("parent exited early: {status:?}"),
+            _ => {}
+        }
+    };
+    assert!(pid_alive(root_pid));
+    assert!(pid_alive(grandchild_pid));
+
+    assert_eq!(
+        reap_epoch_pid_file(&pid_path, dir.path()).await.unwrap(),
+        OrphanReapOutcome::Killed
+    );
+    assert!(!pid_alive(root_pid), "recorded parent survived reaping");
+    assert!(
+        !pid_alive(grandchild_pid),
+        "captured descendant survived reaping"
+    );
+}
+
+#[tokio::test]
 async fn orphan_reap_rejects_unproven_start_identity_without_killing() {
     let dir = tempfile::tempdir().unwrap();
     let pid_path = dir.path().join("core-4.pid");
