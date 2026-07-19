@@ -190,9 +190,12 @@ impl Supervisor {
     /// Marks the current child ready if `pid` still identifies that child.
     /// Stale or already-terminated PIDs are ignored.
     pub async fn acknowledge_ready(&self, pid: u32) -> bool {
-        let is_current = self.current.lock().await.as_ref().is_some_and(|handle| {
-            handle.pid() == pid && handle.terminated.borrow().is_none()
-        });
+        let is_current = self
+            .current
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|handle| handle.pid() == pid && handle.terminated.borrow().is_none());
         if !is_current
             || self
                 .ready_pending

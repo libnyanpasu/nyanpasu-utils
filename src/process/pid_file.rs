@@ -180,7 +180,9 @@ impl PidFileGuard {
 }
 
 /// Reads a structured epoch pid record. Numeric legacy files are rejected.
-pub async fn read_epoch_pid_file(path: impl AsRef<Path>) -> std::io::Result<Option<EpochPidRecord>> {
+pub async fn read_epoch_pid_file(
+    path: impl AsRef<Path>,
+) -> std::io::Result<Option<EpochPidRecord>> {
     let path = path.as_ref();
     match tokio::fs::symlink_metadata(path).await {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -243,7 +245,9 @@ pub async fn reap_epoch_pid_file(
         .parent()
         .ok_or_else(|| invalid_input("runtime config has no parent directory"))?;
     if tokio::fs::canonicalize(runtime_parent).await? != runtime_dir {
-        return Err(invalid_input("runtime config escapes the runtime directory"));
+        return Err(invalid_input(
+            "runtime config escapes the runtime directory",
+        ));
     }
     let runtime_epoch = epoch_from_file_name(&record.runtime_config, "config-", ".yaml")?;
     if runtime_epoch != epoch {
@@ -358,7 +362,8 @@ async fn reap_record(record: &EpochPidRecord) -> std::io::Result<OrphanReapOutco
     }
 
     let descendants = capture_descendants(record.pid);
-    let root_outcome = reap_record_with_kill(record, false, || kill_recorded_process(record)).await?;
+    let root_outcome =
+        reap_record_with_kill(record, false, || kill_recorded_process(record)).await?;
     let mut killed_descendant = false;
     let mut failures = Vec::new();
     for descendant in descendants {
@@ -682,10 +687,7 @@ fn process_identity(pid: u32) -> std::io::Result<Option<ProcessIdentity>> {
 
     const PROCESS_SYNCHRONIZE: PROCESS_ACCESS_RIGHTS = PROCESS_ACCESS_RIGHTS(0x0010_0000);
 
-    let handle = match open_process(
-        pid,
-        PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
-    ) {
+    let handle = match open_process(pid, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE) {
         Ok(handle) => handle,
         Err(error) if error.raw_os_error() == Some(87) => return Ok(None),
         Err(error) => return Err(error),
@@ -729,9 +731,7 @@ fn process_identity_from_handle(
     use windows::{
         Win32::{
             Foundation::FILETIME,
-            System::Threading::{
-                GetProcessTimes, PROCESS_NAME_WIN32, QueryFullProcessImageNameW,
-            },
+            System::Threading::{GetProcessTimes, PROCESS_NAME_WIN32, QueryFullProcessImageNameW},
         },
         core::PWSTR,
     };
@@ -748,16 +748,8 @@ fn process_identity_from_handle(
     let mut kernel = FILETIME::default();
     let mut user = FILETIME::default();
     // SAFETY: all output pointers reference initialized writable FILETIME values.
-    unsafe {
-        GetProcessTimes(
-            handle.0,
-            &mut creation,
-            &mut exit,
-            &mut kernel,
-            &mut user,
-        )
-    }
-    .map_err(windows_io_error)?;
+    unsafe { GetProcessTimes(handle.0, &mut creation, &mut exit, &mut kernel, &mut user) }
+        .map_err(windows_io_error)?;
 
     let mut executable = vec![0_u16; 32_768];
     let mut len = executable.len() as u32;
@@ -779,8 +771,7 @@ fn process_identity_from_handle(
         .ok_or_else(|| identity_error(format!("cannot resolve executable for live pid {pid}")))?;
     Ok(ProcessIdentity {
         executable: executable.to_owned(),
-        start_token: (u64::from(creation.dwHighDateTime) << 32)
-            | u64::from(creation.dwLowDateTime),
+        start_token: (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime),
     })
 }
 
@@ -996,10 +987,7 @@ async fn write_epoch_record(path: &Path, record: &EpochPidRecord) -> std::io::Re
     result
 }
 
-async fn remove_record_if_matches(
-    path: &Path,
-    expected: &EpochPidRecord,
-) -> std::io::Result<()> {
+async fn remove_record_if_matches(path: &Path, expected: &EpochPidRecord) -> std::io::Result<()> {
     if read_epoch_pid_file(path).await?.as_ref() != Some(expected) {
         return Ok(());
     }
@@ -1164,10 +1152,8 @@ mod tests {
             executable: "late-child".into(),
             start_token: 22,
         };
-        let captured = merge_descendant_captures(
-            BTreeMap::new(),
-            [(22, Some(late_identity.clone()))].into(),
-        );
+        let captured =
+            merge_descendant_captures(BTreeMap::new(), [(22, Some(late_identity.clone()))].into());
 
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].pid, 22);

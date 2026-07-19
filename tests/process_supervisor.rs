@@ -112,19 +112,18 @@ async fn ready_emitted_and_stop_is_clean() {
 async fn restart_storm_gives_up_even_when_alive_after_resets_attempts() {
     let log = EventLog::default();
     let log2 = log.clone();
-    let _supervisor = Supervisor::builder(|| {
-        Command::new(child()).args(["sleep-then-exit", "100", "1"])
-    })
-    .restart_policy(RestartPolicy::OnFailure { max_restarts: 2 })
-    .backoff(Backoff::exponential(
-        Duration::from_millis(5),
-        Duration::from_millis(5),
-    ))
-    .readiness(ReadinessProbe::AliveAfter(Duration::from_millis(25)))
-    .on_event(move |event| log2.push(event))
-    .spawn()
-    .await
-    .unwrap();
+    let _supervisor =
+        Supervisor::builder(|| Command::new(child()).args(["sleep-then-exit", "100", "1"]))
+            .restart_policy(RestartPolicy::OnFailure { max_restarts: 2 })
+            .backoff(Backoff::exponential(
+                Duration::from_millis(5),
+                Duration::from_millis(5),
+            ))
+            .readiness(ReadinessProbe::AliveAfter(Duration::from_millis(25)))
+            .on_event(move |event| log2.push(event))
+            .spawn()
+            .await
+            .unwrap();
 
     log.wait_for(
         |events| {

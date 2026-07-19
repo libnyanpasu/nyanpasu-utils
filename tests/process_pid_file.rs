@@ -162,7 +162,10 @@ async fn different_epoch_pid_files_do_not_kill_overlapping_process() {
         .unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    assert!(pid_alive(first_pid), "epoch 2 killed the overlapping epoch 1");
+    assert!(
+        pid_alive(first_pid),
+        "epoch 2 killed the overlapping epoch 1"
+    );
     assert_eq!(
         read_epoch_pid_file(dir.path().join("core-1.pid"))
             .await
