@@ -303,12 +303,9 @@ async fn validate_pid_target(path: &Path) -> std::io::Result<()> {
             "pid file must be a regular file: {}",
             path.display()
         ))),
-        Ok(metadata) if crate::io::atomic_fs::is_reparse_point(&metadata) => {
-            Err(invalid_input(format!(
-                "pid file must not be a reparse point: {}",
-                path.display()
-            )))
-        }
+        Ok(metadata) if crate::io::atomic_fs::is_reparse_point(&metadata) => Err(invalid_input(
+            format!("pid file must not be a reparse point: {}", path.display()),
+        )),
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
@@ -1000,12 +997,9 @@ async fn write_epoch_record(path: &Path, record: &EpochPidRecord) -> std::io::Re
                 }
                 crate::io::atomic_fs::AtomicFsError::Io(error) => error,
                 crate::io::atomic_fs::AtomicFsError::UnsafePath(path)
-                | crate::io::atomic_fs::AtomicFsError::Contended(path) => {
-                    std::io::Error::other(format!(
-                        "unexpected atomic filesystem error for {}",
-                        path.display()
-                    ))
-                }
+                | crate::io::atomic_fs::AtomicFsError::Contended(path) => std::io::Error::other(
+                    format!("unexpected atomic filesystem error for {}", path.display()),
+                ),
             })
     }
     .await;

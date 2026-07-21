@@ -55,18 +55,15 @@ pub fn acquire_dir_lock(path: impl AsRef<Path>) -> Result<DirLock, AtomicFsError
 
     #[cfg(unix)]
     {
-        let file = nix::fcntl::Flock::lock(
-            file,
-            nix::fcntl::FlockArg::LockExclusiveNonblock,
-        )
-        .map_err(|(_, errno)| {
-            let error: std::io::Error = errno.into();
-            if dir_lock_is_contended(&error) {
-                AtomicFsError::Contended(path.to_owned())
-            } else {
-                error.into()
-            }
-        })?;
+        let file = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock)
+            .map_err(|(_, errno)| {
+                let error: std::io::Error = errno.into();
+                if dir_lock_is_contended(&error) {
+                    AtomicFsError::Contended(path.to_owned())
+                } else {
+                    error.into()
+                }
+            })?;
         Ok(DirLock { _file: file })
     }
 
@@ -92,9 +89,7 @@ fn dir_lock_is_contended(_error: &std::io::Error) -> bool {
     false
 }
 
-pub async fn validate_absent_regular_target(
-    path: impl AsRef<Path>,
-) -> Result<(), AtomicFsError> {
+pub async fn validate_absent_regular_target(path: impl AsRef<Path>) -> Result<(), AtomicFsError> {
     let path = path.as_ref();
     match tokio::fs::symlink_metadata(path).await {
         Ok(metadata)
@@ -114,9 +109,7 @@ pub async fn validate_absent_regular_target(
     }
 }
 
-pub async fn validate_existing_regular_target(
-    path: impl AsRef<Path>,
-) -> Result<(), AtomicFsError> {
+pub async fn validate_existing_regular_target(path: impl AsRef<Path>) -> Result<(), AtomicFsError> {
     let path = path.as_ref();
     let metadata = tokio::fs::symlink_metadata(path).await?;
     if metadata.file_type().is_symlink() || !metadata.is_file() || is_reparse_point(&metadata) {
@@ -354,8 +347,7 @@ pub async fn atomic_replace(
         match windows_replace_file(source.as_ref(), target.as_ref()) {
             Ok(()) => return Ok(()),
             Err(AtomicFsError::Io(error))
-                if matches!(error.raw_os_error(), Some(5 | 32 | 33))
-                    && attempt + 1 < RETRIES =>
+                if matches!(error.raw_os_error(), Some(5 | 32 | 33)) && attempt + 1 < RETRIES =>
             {
                 tokio::time::sleep(std::time::Duration::from_millis(25)).await;
             }
