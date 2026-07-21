@@ -303,6 +303,12 @@ async fn validate_pid_target(path: &Path) -> std::io::Result<()> {
             "pid file must be a regular file: {}",
             path.display()
         ))),
+        Ok(metadata) if crate::io::atomic_fs::is_reparse_point(&metadata) => {
+            Err(invalid_input(format!(
+                "pid file must not be a reparse point: {}",
+                path.display()
+            )))
+        }
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
@@ -978,28 +984,33 @@ async fn write_epoch_record(path: &Path, record: &EpochPidRecord) -> std::io::Re
         file.flush().await?;
         file.sync_all().await?;
         drop(file);
-        // Publish via hard_link rather than rename: `link(2)` on Unix and
-        // `CreateHardLinkW` on Windows both fail atomically (EEXIST /
-        // AlreadyExists) if the destination already exists, unlike rename
-        // which silently replaces it. This closes the TOCTOU window between
-        // the `try_exists` check above and publication. hard_link requires
-        // the same volume, which is guaranteed here because `temp` is staged
-        // in the same directory as `path`.
-        tokio::fs::hard_link(&temp, path).await.map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    format!("pid file unexpectedly exists: {}", path.display()),
-                )
-            } else {
-                error
-            }
-        })
+        // The shared publisher fails atomically if the destination appeared
+        // after the `try_exists` check above. The staging path shares the
+        // destination directory, as required by both platform implementations.
+        crate::io::atomic_fs::atomic_move_new(&temp, path)
+            .await
+            .map_err(|error| match error {
+                crate::io::atomic_fs::AtomicFsError::Io(error)
+                    if error.kind() == std::io::ErrorKind::AlreadyExists =>
+                {
+                    std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        format!("pid file unexpectedly exists: {}", path.display()),
+                    )
+                }
+                crate::io::atomic_fs::AtomicFsError::Io(error) => error,
+                crate::io::atomic_fs::AtomicFsError::UnsafePath(path)
+                | crate::io::atomic_fs::AtomicFsError::Contended(path) => {
+                    std::io::Error::other(format!(
+                        "unexpected atomic filesystem error for {}",
+                        path.display()
+                    ))
+                }
+            })
     }
     .await;
-    // Unlike rename, a successful hard_link leaves `temp` in place as a
-    // second name for the same file, so the staging file must be removed on
-    // both the success and failure paths.
+    // Publication consumes `temp` on success; on failure it remains and must
+    // be cleaned up here.
     let _ = tokio::fs::remove_file(&temp).await;
     result
 }

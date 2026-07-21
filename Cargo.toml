@@ -51,7 +51,7 @@ test-log = "0.2"
 libc = { version = "0.2", optional = true }
 nix = {
   version = "0.31.0",
-  features = ["process", "signal", "user"],
+  features = ["process", "signal", "user", "fs"],
   optional = true
 }
 
@@ -60,6 +60,7 @@ windows = {
   version = "0.62",
   features = [
     "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_System_Console",
     "Win32_System_Threading",
     "Win32_UI_Shell",
@@ -69,6 +70,7 @@ windows = {
 
 [features]
 default = ["core_manager", "dirs", "network", "serde"]
+atomic_fs = ["os"]
 core_manager = [
   "dep:camino",
   "dep:derive_builder",
@@ -86,6 +88,6 @@ os = [
   "dep:sysinfo",
   "dep:windows",
 ]
-process = ["dep:encoding_rs", "dep:libc", "dep:processkit", "dep:tokio-util", "os"]
+process = ["dep:encoding_rs", "dep:libc", "dep:processkit", "dep:tokio-util", "os", "atomic_fs"]
 serde = ["dep:serde"]
 specta = ["dep:specta"]

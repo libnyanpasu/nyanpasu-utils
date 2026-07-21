@@ -4,6 +4,9 @@
 
 //! Byte-oriented IO helpers.
 
+#[cfg(feature = "atomic_fs")]
+pub mod atomic_fs;
+
 use std::convert::Infallible;
 use std::io::BufRead;
 use std::result::Result as StdResult;
