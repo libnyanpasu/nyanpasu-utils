@@ -21,12 +21,24 @@ pub struct EpochPidFile {
     runtime_config: PathBuf,
 }
 
+/// The inputs one [`EpochPidFile`] is built from. The two paths have the same
+/// type and sit either side of the epoch, so only a name says which is the pid
+/// record and which is the runtime config it belongs to.
+#[derive(Debug, Clone, Copy)]
+pub struct EpochPidFileSpec<'a> {
+    /// Where the pid record is written.
+    pub pid_path: &'a Path,
+    /// The runtime config this epoch was launched with.
+    pub runtime_config: &'a Path,
+    pub epoch: u64,
+}
+
 impl EpochPidFile {
-    pub fn new(path: impl Into<PathBuf>, epoch: u64, runtime_config: impl Into<PathBuf>) -> Self {
+    pub fn new(spec: EpochPidFileSpec<'_>) -> Self {
         Self {
-            path: path.into(),
-            epoch,
-            runtime_config: runtime_config.into(),
+            path: spec.pid_path.to_owned(),
+            epoch: spec.epoch,
+            runtime_config: spec.runtime_config.to_owned(),
         }
     }
 
