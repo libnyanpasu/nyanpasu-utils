@@ -52,6 +52,6 @@ pub use pid_file::{
     reap_epoch_pid_file,
 };
 pub use supervisor::{
-    Backoff, ReadinessProbe, RestartPolicy, RestartStormPolicy, Supervisor, SupervisorBuilder,
-    SupervisorEvent,
+    Backoff, BackoffRange, ReadinessProbe, RestartPolicy, RestartStormPolicy, Supervisor,
+    SupervisorBuilder, SupervisorEvent,
 };
