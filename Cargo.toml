@@ -19,7 +19,7 @@ required-features = ["process"]
 camino = { version = "1.1", features = ["serde1"], optional = true }
 constcat = "0.6.0"
 derive_builder = { version = "0.20", optional = true }
-dirs = { version = "6", optional = true }
+dirs = { version = "7", optional = true }
 encoding_rs = { version = "0.8", optional = true }
 kill_tree = { version = "0.2.4", features = ["tokio"], optional = true }
 log = { version = "0.4", optional = true }
