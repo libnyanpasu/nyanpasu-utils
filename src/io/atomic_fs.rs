@@ -320,12 +320,20 @@ pub async fn atomic_move_new(
     Ok(())
 }
 
+/// The two sides of an atomic publish. Both are paths of the same type, so a
+/// name is the only thing that says which file is consumed and which is
+/// overwritten.
+#[derive(Debug, Clone, Copy)]
+pub struct AtomicReplacement<'a> {
+    /// The staged file whose contents should become visible.
+    pub replacement: &'a Path,
+    /// The existing path that should end up holding those contents.
+    pub destination: &'a Path,
+}
+
 #[cfg(unix)]
-pub async fn atomic_replace(
-    source: impl AsRef<Path>,
-    target: impl AsRef<Path>,
-) -> Result<(), AtomicFsError> {
-    tokio::fs::rename(source.as_ref(), target.as_ref()).await?;
+pub async fn atomic_replace(op: AtomicReplacement<'_>) -> Result<(), AtomicFsError> {
+    tokio::fs::rename(op.replacement, op.destination).await?;
     Ok(())
 }
 
@@ -338,13 +346,10 @@ pub async fn atomic_move_new(
 }
 
 #[cfg(windows)]
-pub async fn atomic_replace(
-    source: impl AsRef<Path>,
-    target: impl AsRef<Path>,
-) -> Result<(), AtomicFsError> {
+pub async fn atomic_replace(op: AtomicReplacement<'_>) -> Result<(), AtomicFsError> {
     const RETRIES: usize = 20;
     for attempt in 0..RETRIES {
-        match windows_replace_file(source.as_ref(), target.as_ref()) {
+        match windows_replace_file(op.replacement, op.destination) {
             Ok(()) => return Ok(()),
             Err(AtomicFsError::Io(error))
                 if matches!(error.raw_os_error(), Some(5 | 32 | 33)) && attempt + 1 < RETRIES =>
@@ -488,17 +493,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn atomic_replace_overwrites_existing_target() {
+    async fn atomic_replace_overwrites_existing_destination() {
         let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("source");
-        let target = dir.path().join("target");
-        tokio::fs::write(&source, b"new").await.unwrap();
-        tokio::fs::write(&target, b"old").await.unwrap();
+        let replacement = dir.path().join("replacement");
+        let destination = dir.path().join("destination");
+        tokio::fs::write(&replacement, b"new").await.unwrap();
+        tokio::fs::write(&destination, b"old").await.unwrap();
 
-        atomic_replace(&source, &target).await.unwrap();
+        atomic_replace(AtomicReplacement {
+            replacement: &replacement,
+            destination: &destination,
+        })
+        .await
+        .unwrap();
 
-        assert_eq!(tokio::fs::read(&target).await.unwrap(), b"new");
-        assert!(!source.exists());
+        assert_eq!(tokio::fs::read(&destination).await.unwrap(), b"new");
+        assert!(!replacement.exists());
     }
 
     #[tokio::test]
