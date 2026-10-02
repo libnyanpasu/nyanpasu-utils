@@ -52,6 +52,7 @@ pub trait NamedPipeRequestExt {
 
     fn upgrade_with_named_pipe_retry(
         self,
+        max_message_size: Option<usize>,
     ) -> impl Future<Output = Result<reqwest_websocket::UpgradeResponse, reqwest_websocket::Error>> + Send;
 }
 
@@ -62,8 +63,20 @@ impl NamedPipeRequestExt for RequestBuilder {
 
     async fn upgrade_with_named_pipe_retry(
         self,
+        max_message_size: Option<usize>,
     ) -> Result<reqwest_websocket::UpgradeResponse, reqwest_websocket::Error> {
-        retry_send(self, |request| request.upgrade().send()).await
+        retry_send(self, |request| {
+            let mut upgraded = request.upgrade();
+            if let Some(limit) = max_message_size {
+                upgraded = upgraded.web_socket_config(
+                    tungstenite::protocol::WebSocketConfig::default()
+                        .max_message_size(Some(limit))
+                        .max_frame_size(Some(limit)),
+                );
+            }
+            upgraded.send()
+        })
+        .await
     }
 }
 

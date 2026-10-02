@@ -36,6 +36,7 @@ processkit = {
 serde = { version = "1", features = ["derive"], optional = true }
 reqwest = { version = "0.13", default-features = false, optional = true }
 reqwest-websocket = { version = "0.6", optional = true }
+tungstenite = { version = "0.28", default-features = false, optional = true }
 shared_child = { version = "1", optional = true }
 specta = { version = "^2.0.0-rc.25", features = ["derive"], optional = true }
 sysinfo = { version = "0.39", optional = true }
@@ -94,6 +95,6 @@ os = [
   "dep:windows",
 ]
 process = ["dep:encoding_rs", "dep:libc", "dep:processkit", "dep:tokio-util", "os", "atomic_fs"]
-reqwest = ["dep:backon", "dep:reqwest", "dep:reqwest-websocket"]
+reqwest = ["dep:backon", "dep:reqwest", "dep:reqwest-websocket", "dep:tungstenite"]
 serde = ["dep:serde"]
 specta = ["dep:specta"]
