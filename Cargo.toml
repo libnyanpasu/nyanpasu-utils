@@ -1,6 +1,6 @@
 [package]
 name = "nyanpasu-utils"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Shared utilities for Nyanpasu applications and services."
 repository = "https://github.com/LibNyanpasu/nyanpasu-utils"
