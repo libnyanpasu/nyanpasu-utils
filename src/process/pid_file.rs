@@ -160,7 +160,9 @@ impl PidFileGuard {
                 // narrow pre-record interval can leave an orphan without an
                 // authoritative identity record; such a process is never
                 // killed on an unproven numeric PID.
-                let identity = wait_for_process_identity(pid).await?.ok_or_else(|| {
+                let identity = wait_for_process_identity(pid, expected_exe)
+                    .await?
+                    .ok_or_else(|| {
                     identity_error(format!("spawned pid {pid} disappeared before recording"))
                 })?;
                 let executable = identity.executable.ok_or_else(|| {
@@ -658,11 +660,29 @@ fn identity_query_is_provisional(error: &std::io::Error) -> bool {
     false
 }
 
-async fn wait_for_process_identity(pid: u32) -> std::io::Result<Option<ProcessIdentity>> {
+/// Polls until `pid` reports `expected_exe`, returning the last identity seen
+/// when it never does. A vfork-based spawn (glibc `posix_spawn`) resumes the
+/// parent once the child releases the parent's mm, before exec installs the
+/// new one, so `/proc/<pid>/exe` can briefly name the parent's binary. The
+/// start token survives exec, so the matching identity is the spawned one.
+async fn wait_for_process_identity(
+    pid: u32,
+    expected_exe: &str,
+) -> std::io::Result<Option<ProcessIdentity>> {
     let mut access_error = None;
+    let mut observed = None;
     for attempt in 0..IDENTITY_WAIT_ATTEMPTS {
         match process_identity(pid) {
-            Ok(Some(identity)) => return Ok(Some(identity)),
+            Ok(Some(identity)) => {
+                if identity
+                    .executable
+                    .as_deref()
+                    .is_some_and(|executable| exe_names_equal(executable, expected_exe))
+                {
+                    return Ok(Some(identity));
+                }
+                observed = Some(identity);
+            }
             Ok(None) => {}
             Err(error) if identity_query_is_provisional(&error) => {
                 access_error = Some(error);
@@ -673,9 +693,10 @@ async fn wait_for_process_identity(pid: u32) -> std::io::Result<Option<ProcessId
             tokio::time::sleep(IDENTITY_WAIT_DELAY).await;
         }
     }
-    match access_error {
-        Some(error) => Err(error),
-        None => Ok(None),
+    match (observed, access_error) {
+        (Some(identity), _) => Ok(Some(identity)),
+        (None, Some(error)) => Err(error),
+        (None, None) => Ok(None),
     }
 }
 
@@ -1673,7 +1694,14 @@ mod tests {
             .unwrap();
 
         let pid = child.id();
-        let identity = wait_for_process_identity(pid).await.unwrap().unwrap();
+        #[cfg(windows)]
+        let expected_exe = "cmd.exe";
+        #[cfg(unix)]
+        let expected_exe = "sleep";
+        let identity = wait_for_process_identity(pid, expected_exe)
+            .await
+            .unwrap()
+            .unwrap();
         let record = EpochPidRecord {
             pid,
             epoch: 1,
