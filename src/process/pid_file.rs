@@ -163,8 +163,8 @@ impl PidFileGuard {
                 let identity = wait_for_process_identity(pid, expected_exe)
                     .await?
                     .ok_or_else(|| {
-                    identity_error(format!("spawned pid {pid} disappeared before recording"))
-                })?;
+                        identity_error(format!("spawned pid {pid} disappeared before recording"))
+                    })?;
                 let executable = identity.executable.ok_or_else(|| {
                     identity_error(format!("cannot resolve executable for spawned pid {pid}"))
                 })?;
