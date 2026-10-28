@@ -365,7 +365,10 @@ async fn orphan_reap_spares_the_tree_under_a_reused_pid() {
         OrphanReapOutcome::AlreadyExited
     );
     assert!(pid_alive(handle.pid()), "reused root was killed");
-    assert!(pid_alive(grandchild_pid), "descendant of a reused pid was killed");
+    assert!(
+        pid_alive(grandchild_pid),
+        "descendant of a reused pid was killed"
+    );
 
     let _ = handle.kill().await;
 }

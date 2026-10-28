@@ -1490,7 +1490,10 @@ mod tests {
     fn darwin_start_time_matches_sysinfo_for_an_own_process() {
         let pid = std::process::id();
         let start = darwin::start_seconds(pid).unwrap().unwrap();
-        assert_eq!(Some(start), sysinfo_identity(pid).map(|identity| identity.start_token));
+        assert_eq!(
+            Some(start),
+            sysinfo_identity(pid).map(|identity| identity.start_token)
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -1499,7 +1502,10 @@ mod tests {
         // launchd runs as root; sysinfo reports a start time of 0 for it when
         // the tests run unprivileged.
         let start = darwin::start_seconds(1).unwrap();
-        assert!(start.is_some_and(|start| start > 0), "launchd start time: {start:?}");
+        assert!(
+            start.is_some_and(|start| start > 0),
+            "launchd start time: {start:?}"
+        );
     }
 
     #[cfg(target_os = "macos")]
