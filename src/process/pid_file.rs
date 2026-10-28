@@ -1664,9 +1664,11 @@ mod tests {
             .args(["/D", "/S", "/C", "ping -n 30 127.0.0.1 >NUL"])
             .spawn()
             .unwrap();
+        // Spawned directly: `sh -c` may exec into `sleep`, changing the
+        // executable after the identity was read.
         #[cfg(unix)]
-        let mut child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30"])
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
             .spawn()
             .unwrap();
 
