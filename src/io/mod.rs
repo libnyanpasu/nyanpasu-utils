@@ -57,3 +57,80 @@ pub fn unwrap_infallible<T>(result: StdResult<T, Infallible>) -> T {
         Err(err) => match err {},
     }
 }
+
+/// How a caller may react to an IO error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum IoFailure {
+    /// Contention that usually clears within milliseconds; a bounded retry may succeed.
+    Transient,
+    /// Access was refused. Neither a retry nor rebuilding the node can help.
+    PermissionDenied,
+    /// Any other error, including a missing node or invalid data.
+    Other,
+}
+
+/// Classifies an IO error by how a caller may react to it.
+///
+/// Windows sharing and lock violations (raw codes 32 and 33) are transient
+/// whatever kind the standard library maps them to.
+pub fn classify(error: &std::io::Error) -> IoFailure {
+    #[cfg(windows)]
+    if matches!(error.raw_os_error(), Some(32 | 33)) {
+        return IoFailure::Transient;
+    }
+    match error.kind() {
+        std::io::ErrorKind::Interrupted
+        | std::io::ErrorKind::WouldBlock
+        | std::io::ErrorKind::TimedOut
+        | std::io::ErrorKind::ResourceBusy => IoFailure::Transient,
+        std::io::ErrorKind::PermissionDenied => IoFailure::PermissionDenied,
+        _ => IoFailure::Other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Error, ErrorKind};
+
+    use super::{IoFailure, classify};
+
+    #[test]
+    fn classify_separates_contention_permission_and_other_errors() {
+        for kind in [
+            ErrorKind::Interrupted,
+            ErrorKind::WouldBlock,
+            ErrorKind::TimedOut,
+            ErrorKind::ResourceBusy,
+        ] {
+            assert_eq!(
+                classify(&Error::from(kind)),
+                IoFailure::Transient,
+                "{kind:?}"
+            );
+        }
+        assert_eq!(
+            classify(&Error::from(ErrorKind::PermissionDenied)),
+            IoFailure::PermissionDenied
+        );
+        for kind in [ErrorKind::NotFound, ErrorKind::InvalidData] {
+            assert_eq!(classify(&Error::from(kind)), IoFailure::Other, "{kind:?}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn classify_treats_windows_sharing_and_lock_violations_as_transient() {
+        for code in [32, 33] {
+            assert_eq!(
+                classify(&Error::from_raw_os_error(code)),
+                IoFailure::Transient
+            );
+        }
+        // ERROR_ACCESS_DENIED stays a permission failure.
+        assert_eq!(
+            classify(&Error::from_raw_os_error(5)),
+            IoFailure::PermissionDenied
+        );
+    }
+}

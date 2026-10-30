@@ -34,6 +34,7 @@ processkit = {
   features = ["tracing"],
   optional = true
 }
+redb = { version = "4.4", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 reqwest = { version = "0.13", default-features = false, optional = true }
 reqwest-websocket = { version = "0.6", optional = true }
@@ -52,6 +53,7 @@ futures-util = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["stream"] }
 tempfile = "3"
 test-log = "0.2"
+tokio = { version = "1", features = ["test-util"] }
 
 [target."cfg(unix)".dependencies]
 libc = { version = "0.2", optional = true }
@@ -95,6 +97,7 @@ os = [
   "dep:windows",
 ]
 process = ["dep:encoding_rs", "dep:libc", "dep:processkit", "dep:tokio-util", "os", "atomic_fs"]
+redb = ["dep:redb"]
 reqwest = ["dep:backon", "dep:reqwest", "dep:reqwest-websocket"]
 serde = ["dep:serde"]
 specta = ["dep:specta"]
