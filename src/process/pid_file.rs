@@ -281,27 +281,13 @@ where
     // Three retries after the initial attempt, restricted to record filesystem IO.
     for delay in [50, 100, 200] {
         match operation().await {
-            Err(error) if record_io_is_transient(&error) => {
+            Err(error) if crate::io::classify(&error) == crate::io::IoFailure::Transient => {
                 tokio::time::sleep(Duration::from_millis(delay)).await;
             }
             result => return result,
         }
     }
     operation().await
-}
-
-fn record_io_is_transient(error: &std::io::Error) -> bool {
-    #[cfg(windows)]
-    if matches!(error.raw_os_error(), Some(32 | 33)) {
-        return true;
-    }
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::Interrupted
-            | std::io::ErrorKind::WouldBlock
-            | std::io::ErrorKind::TimedOut
-            | std::io::ErrorKind::ResourceBusy
-    )
 }
 
 /// Read-only identity check for a copied epoch record. A missing pid, or one
