@@ -70,6 +70,17 @@ pub enum IoFailure {
     Other,
 }
 
+/// Backoff for [`IoFailure::Transient`] errors: three retries after the first
+/// attempt, waiting 50, 100 and 200 ms.
+///
+/// The delays are listed rather than built with backon's exponential builder,
+/// whose `f32` factor drifts off whole milliseconds.
+pub fn transient_backoff() -> impl backon::BackoffBuilder {
+    [50, 100, 200]
+        .map(std::time::Duration::from_millis)
+        .into_iter()
+}
+
 /// Classifies an IO error by how a caller may react to it.
 ///
 /// Windows sharing and lock violations (raw codes 32 and 33) are transient
@@ -91,9 +102,22 @@ pub fn classify(error: &std::io::Error) -> IoFailure {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Error, ErrorKind};
+    use std::{
+        io::{Error, ErrorKind},
+        time::Duration,
+    };
 
-    use super::{IoFailure, classify};
+    use backon::BackoffBuilder as _;
+
+    use super::{IoFailure, classify, transient_backoff};
+
+    #[test]
+    fn transient_backoff_waits_50_100_and_200_ms() {
+        assert_eq!(
+            transient_backoff().build().collect::<Vec<_>>(),
+            [50, 100, 200].map(Duration::from_millis)
+        );
+    }
 
     #[test]
     fn classify_separates_contention_permission_and_other_errors() {
