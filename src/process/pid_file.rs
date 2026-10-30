@@ -1971,7 +1971,7 @@ mod tests {
         }
         let (dir, path, _, _) = reap_fixture();
         let original = std::fs::metadata(&path).unwrap().permissions();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         let result = reap_epoch_pid_file(&path, dir.path()).await;
         std::fs::set_permissions(&path, original).unwrap();
         assert!(matches!(result, Err(OrphanReapError::Io { source, .. })
