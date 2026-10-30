@@ -273,21 +273,17 @@ async fn read_epoch_pid_file_once(path: &Path) -> std::io::Result<Option<EpochPi
     parse_epoch_record(&raw).map(Some)
 }
 
-async fn retry_record_io<T, F, Fut>(mut operation: F) -> std::io::Result<T>
+/// Restricted to record filesystem IO; signaling a process is never retried.
+async fn retry_record_io<T, F, Fut>(operation: F) -> std::io::Result<T>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = std::io::Result<T>>,
 {
-    // Three retries after the initial attempt, restricted to record filesystem IO.
-    for delay in [50, 100, 200] {
-        match operation().await {
-            Err(error) if crate::io::classify(&error) == crate::io::IoFailure::Transient => {
-                tokio::time::sleep(Duration::from_millis(delay)).await;
-            }
-            result => return result,
-        }
-    }
-    operation().await
+    use backon::Retryable as _;
+    operation
+        .retry(crate::io::transient_backoff())
+        .when(|error| crate::io::classify(error) == crate::io::IoFailure::Transient)
+        .await
 }
 
 /// Read-only identity check for a copied epoch record. A missing pid, or one
