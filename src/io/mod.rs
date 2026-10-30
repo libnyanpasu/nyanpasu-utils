@@ -60,6 +60,7 @@ pub fn unwrap_infallible<T>(result: StdResult<T, Infallible>) -> T {
 
 /// How a caller may react to an IO error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum IoFailure {
     /// Contention that usually clears within milliseconds; a bounded retry may succeed.
     Transient,
