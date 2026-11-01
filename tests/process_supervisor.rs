@@ -64,7 +64,10 @@ impl StopRequest {
             .await
             .expect("supervisor stop timeout")
             .unwrap();
-        assert!(matches!(log.snapshot().last(), Some(SupervisorEvent::Stopped)));
+        assert!(matches!(
+            log.snapshot().last(),
+            Some(SupervisorEvent::Stopped)
+        ));
         assert!(
             !log.snapshot()
                 .iter()
