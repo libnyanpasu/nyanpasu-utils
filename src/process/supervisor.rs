@@ -25,9 +25,10 @@ type ProcessEventHook = Arc<dyn Fn(ProcessEvent) + Send + Sync>;
 
 /// Selects how the supervisor stops its current child process tree.
 #[atomic_enum]
-#[derive(PartialEq, Eq)]
+#[derive(Default, PartialEq, Eq)]
 pub enum StopStrategy {
     /// Requests graceful termination, falling back to a hard kill on failure.
+    #[default]
     Graceful,
     /// Kills the process tree immediately.
     Kill,
@@ -218,7 +219,7 @@ impl Supervisor {
             on_event: None,
             on_process_event: None,
             cancel_token: None,
-            stop_strategy: Arc::new(AtomicStopStrategy::new(StopStrategy::Graceful)),
+            stop_strategy: Arc::new(AtomicStopStrategy::new(StopStrategy::default())),
         }
     }
 
