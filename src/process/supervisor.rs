@@ -10,6 +10,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
+    activity::{ProcessActivity, requires_tree_kill},
     command::Command,
     error::ProcessError,
     event::{ProcessEvent, TerminatedPayload},
@@ -161,6 +162,7 @@ pub struct SupervisorBuilder {
     on_event: Option<EventHook>,
     on_process_event: Option<ProcessEventHook>,
     cancel_token: Option<CancellationToken>,
+    activity: Option<ProcessActivity>,
 }
 
 /// Handle to a running supervision loop.
@@ -174,10 +176,57 @@ pub struct Supervisor {
     ready_tx: tokio::sync::mpsc::UnboundedSender<u32>,
     ready_pending: Arc<AtomicU32>,
     task: Option<tokio::task::JoinHandle<()>>,
+    activity: Option<ProcessActivity>,
 }
 
-async fn stop_process(handle: ProcessHandle) -> Result<(), ProcessError> {
-    if handle.graceful_kill().await.is_err() {
+async fn wait_for_activity_change(activity: &mut Option<ProcessActivity>) {
+    match activity {
+        Some(activity) => {
+            activity.changed().await;
+        }
+        None => std::future::pending::<()>().await,
+    }
+}
+
+pub(super) async fn wait_to_restart(
+    activity: &mut Option<ProcessActivity>,
+    token: &CancellationToken,
+    mut remaining: Duration,
+) -> bool {
+    loop {
+        if token.is_cancelled() {
+            return false;
+        }
+        if activity.as_ref().is_some_and(|activity| {
+            activity.state() == super::activity::ProcessActivityState::Quiescing
+        }) {
+            tokio::select! {
+                biased;
+                _ = token.cancelled() => return false,
+                _ = wait_for_activity_change(activity) => {},
+            }
+            continue;
+        }
+        if remaining.is_zero() {
+            return true;
+        }
+        let started = tokio::time::Instant::now();
+        tokio::select! {
+            biased;
+            _ = token.cancelled() => return false,
+            _ = wait_for_activity_change(activity) => {
+                remaining = remaining.saturating_sub(started.elapsed());
+            }
+            _ = tokio::time::sleep(remaining) => return true,
+        }
+    }
+}
+
+async fn stop_process(
+    handle: ProcessHandle,
+    activity: Option<&ProcessActivity>,
+) -> Result<(), ProcessError> {
+    if requires_tree_kill(activity, cfg!(windows)) || handle.graceful_kill().await.is_err() {
         match handle.kill().await {
             Err(ProcessError::AlreadyExited) => Ok(()),
             result => result,
@@ -206,6 +255,7 @@ impl Supervisor {
             on_event: None,
             on_process_event: None,
             cancel_token: None,
+            activity: None,
         }
     }
 
@@ -234,13 +284,14 @@ impl Supervisor {
         }
     }
 
-    /// Cancels restarts, gracefully kills the current child, and waits for the
-    /// supervision loop to end.
+    /// Cancels restarts, stops the current child, and waits for supervision to end.
+    /// Windows stops kill the tree directly while the supplied activity is Quiescing;
+    /// other stops request graceful termination before falling back to a tree kill.
     pub async fn stop(mut self) -> Result<(), ProcessError> {
         self.token.cancel();
         let current = self.current.lock().await.take();
         let stop_result = match current {
-            Some(handle) => stop_process(handle).await,
+            Some(handle) => stop_process(handle, self.activity.as_ref()).await,
             None => Ok(()),
         };
         self.task
@@ -259,6 +310,14 @@ impl Drop for Supervisor {
 }
 
 impl SupervisorBuilder {
+    /// Supplies the host activity used for automatic restarts and Windows stops.
+    /// Quiescing pauses failure recovery with its remaining backoff and retains
+    /// one retry until Active. Initial explicit starts still run while Quiescing.
+    pub fn activity(mut self, activity: ProcessActivity) -> Self {
+        self.activity = Some(activity);
+        self
+    }
+
     pub fn restart_policy(mut self, policy: RestartPolicy) -> Self {
         self.policy = policy;
         self
@@ -358,7 +417,9 @@ impl SupervisorBuilder {
         if token.is_cancelled() {
             return Err(ProcessError::Engine("spawn preparation cancelled".into()));
         }
-        let (first_handle, first_rx) = (self.factory)().spawn().await?;
+        let mut command = (self.factory)();
+        command.activity = self.activity.clone();
+        let (first_handle, first_rx) = command.spawn().await?;
         let first_pid = first_handle.pid();
         if matches!(self.readiness, ReadinessProbe::Acknowledged) {
             ready_pending.store(first_pid, Ordering::SeqCst);
@@ -366,6 +427,7 @@ impl SupervisorBuilder {
         emit(SupervisorEvent::Started { pid: first_pid });
         *current.lock().await = Some(first_handle);
 
+        let mut activity = self.activity.clone();
         let preparation = self.preparation;
         let factory = self.factory;
         let policy = self.policy;
@@ -401,8 +463,9 @@ impl SupervisorBuilder {
                                 cancelled = true;
                                 readiness_pending = false;
                                 if let Some(handle) = current_.lock().await.take() {
+                                    let activity = activity.clone();
                                     kill_task = Some(tokio::spawn(async move {
-                                        let _ = stop_process(handle).await;
+                                        let _ = stop_process(handle, activity.as_ref()).await;
                                     }));
                                 }
                             }
@@ -498,16 +561,7 @@ impl SupervisorBuilder {
 
                 let delay = backoff.delay_for(attempt - 1);
                 emit(SupervisorEvent::Restarting { attempt, delay });
-                tokio::select! {
-                    biased;
-                    _ = token_.cancelled() => {
-                        emit(SupervisorEvent::Stopped);
-                        return;
-                    }
-                    _ = tokio::time::sleep(delay) => {}
-                }
-
-                if token_.is_cancelled() {
+                if !wait_to_restart(&mut activity, &token_, delay).await {
                     emit(SupervisorEvent::Stopped);
                     return;
                 }
@@ -524,11 +578,18 @@ impl SupervisorBuilder {
                     }
                     return;
                 }
-                if token_.is_cancelled() {
+                if !wait_to_restart(&mut activity, &token_, Duration::ZERO).await {
                     emit(SupervisorEvent::Stopped);
                     return;
                 }
-                match (factory)().spawn().await {
+                let mut command = (factory)();
+                command.activity = activity.clone();
+                command.restart_cancel = Some(token_.clone());
+                if !wait_to_restart(&mut activity, &token_, Duration::ZERO).await {
+                    emit(SupervisorEvent::Stopped);
+                    return;
+                }
+                match command.spawn().await {
                     Ok((handle, rx)) => {
                         let pid = handle.pid();
                         *current_.lock().await = Some(handle);
@@ -553,6 +614,7 @@ impl SupervisorBuilder {
             ready_tx,
             ready_pending,
             task: Some(task),
+            activity: self.activity,
         })
     }
 }
@@ -561,6 +623,36 @@ impl SupervisorBuilder {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[tokio::test(start_paused = true)]
+    async fn activity_preserves_remaining_backoff_and_cancellation_wins() {
+        use crate::process::{ProcessActivitySource, ProcessActivityState};
+        let source = ProcessActivitySource::new();
+        let mut activity = Some(source.subscribe());
+        let cancel = CancellationToken::new();
+        let wait = wait_to_restart(&mut activity, &cancel, Duration::from_secs(10));
+        tokio::pin!(wait);
+        assert!(futures_util::poll!(&mut wait).is_pending());
+        tokio::time::advance(Duration::from_secs(4)).await;
+        source.set(ProcessActivityState::Quiescing);
+        assert!(futures_util::poll!(&mut wait).is_pending());
+        tokio::time::advance(Duration::from_secs(100)).await;
+        assert!(futures_util::poll!(&mut wait).is_pending());
+        source.set(ProcessActivityState::Active);
+        assert!(futures_util::poll!(&mut wait).is_pending());
+        tokio::time::advance(Duration::from_secs(5)).await;
+        assert!(futures_util::poll!(&mut wait).is_pending());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(wait.await);
+        let mut activity = Some(source.subscribe());
+        source.set(ProcessActivityState::Quiescing);
+        let wait = wait_to_restart(&mut activity, &cancel, Duration::ZERO);
+        tokio::pin!(wait);
+        assert!(futures_util::poll!(&mut wait).is_pending());
+        source.set(ProcessActivityState::Active);
+        cancel.cancel();
+        assert!(!wait.await, "cancellation wins over revocation");
+    }
 
     #[test]
     fn backoff_doubles_and_caps() {

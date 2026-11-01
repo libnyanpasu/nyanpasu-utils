@@ -363,3 +363,318 @@ async fn cancellation_during_preparation_prevents_first_spawn() {
         matches!(result, Err(ProcessError::Engine(message)) if message == "spawn preparation cancelled")
     );
 }
+
+async fn next_supervisor_event(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<SupervisorEvent>,
+    predicate: impl Fn(&SupervisorEvent) -> bool,
+) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(event) = rx.recv().await {
+            if predicate(&event) {
+                return;
+            }
+        }
+        panic!("supervisor ended before confirmation");
+    })
+    .await
+    .expect("supervisor confirmation timeout");
+}
+
+#[tokio::test]
+async fn quiescing_defers_failed_restart_until_revoked() {
+    use nyanpasu_utils::process::{ProcessActivitySource, ProcessActivityState};
+    let source = ProcessActivitySource::new();
+    let source_for_exit = source.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_for_factory = calls.clone();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor = Supervisor::builder(move || {
+        let call = calls_for_factory.fetch_add(1, Ordering::SeqCst);
+        Command::new(child()).args(if call == 0 {
+            ["exit-with", "1"]
+        } else {
+            ["sleep-forever", ""]
+        })
+    })
+    .activity(source.subscribe())
+    .readiness(ReadinessProbe::Acknowledged)
+    .backoff(Backoff::exponential(BackoffRange {
+        initial: Duration::from_secs(10),
+        max: Duration::from_secs(10),
+    }))
+    .on_event(move |event| {
+        if matches!(event, SupervisorEvent::Exited(_)) {
+            source_for_exit.set(ProcessActivityState::Quiescing);
+        }
+        tx.send(event).unwrap();
+    })
+    .spawn()
+    .await
+    .unwrap();
+    next_supervisor_event(&mut rx, |e| matches!(e, SupervisorEvent::Restarting { .. })).await;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(100)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "paused recovery called the factory"
+    );
+    source.set(ProcessActivityState::Active);
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(9)).await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "remaining backoff was skipped"
+    );
+    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::time::resume();
+    next_supervisor_event(&mut rx, |e| matches!(e, SupervisorEvent::Started { .. })).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    supervisor.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn pause_does_not_spend_restart_budget() {
+    use nyanpasu_utils::process::{ProcessActivitySource, ProcessActivityState};
+    let source = ProcessActivitySource::new();
+    let writer = source.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor = Supervisor::builder(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+        Command::new(child()).args(["exit-with", "1"])
+    })
+    .activity(source.subscribe())
+    .restart_policy(RestartPolicy::OnFailure { max_restarts: 1 })
+    .readiness(ReadinessProbe::Acknowledged)
+    .backoff(Backoff::exponential(BackoffRange {
+        initial: Duration::ZERO,
+        max: Duration::ZERO,
+    }))
+    .on_event(move |event| {
+        if matches!(event, SupervisorEvent::Exited(_)) {
+            writer.set(ProcessActivityState::Quiescing);
+        }
+        tx.send(event).unwrap();
+    })
+    .spawn()
+    .await
+    .unwrap();
+    next_supervisor_event(&mut rx, |e| matches!(e, SupervisorEvent::Restarting { .. })).await;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(100)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "pause must retain the only retry"
+    );
+    for _ in 0..3 {
+        source.set(ProcessActivityState::Active);
+        source.set(ProcessActivityState::Quiescing);
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+    source.set(ProcessActivityState::Active);
+    tokio::time::resume();
+    next_supervisor_event(&mut rx, |e| matches!(e, SupervisorEvent::GaveUp)).await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "exactly one deferred retry must run"
+    );
+    supervisor.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn pause_during_preparation_prevents_spawn() {
+    use nyanpasu_utils::process::{ProcessActivitySource, ProcessActivityState};
+    let source = ProcessActivitySource::new();
+    let writer = source.clone();
+    let preparations = Arc::new(AtomicUsize::new(0));
+    let prepared = preparations.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let (prepared_tx, mut prepared_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor = Supervisor::builder(move || {
+        let call = count.fetch_add(1, Ordering::SeqCst);
+        Command::new(child()).args(if call == 0 {
+            ["exit-with", "1"]
+        } else {
+            ["sleep-forever", ""]
+        })
+    })
+    .activity(source.subscribe())
+    .readiness(ReadinessProbe::Acknowledged)
+    .backoff(Backoff::exponential(BackoffRange {
+        initial: Duration::ZERO,
+        max: Duration::ZERO,
+    }))
+    .before_spawn(move || {
+        if prepared.fetch_add(1, Ordering::SeqCst) == 1 {
+            writer.set(ProcessActivityState::Quiescing);
+            prepared_tx.send(()).unwrap();
+        }
+        Ok(())
+    })
+    .on_event(move |event| {
+        tx.send(event).unwrap();
+    })
+    .spawn()
+    .await
+    .unwrap();
+    prepared_rx.recv().await.unwrap();
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "preparation changed activity before factory"
+    );
+    source.set(ProcessActivityState::Active);
+    next_supervisor_event(&mut rx, |e| matches!(e, SupervisorEvent::Restarting { .. })).await;
+    next_supervisor_event(&mut rx, |e| matches!(e, SupervisorEvent::Started { .. })).await;
+    assert_eq!(
+        preparations.load(Ordering::SeqCst),
+        2,
+        "prepared resources were prepared twice"
+    );
+    supervisor.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn stopping_a_paused_supervisor_finishes() {
+    use nyanpasu_utils::process::{ProcessActivitySource, ProcessActivityState};
+    let source = ProcessActivitySource::new();
+    let writer = source.clone();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor = Supervisor::builder(|| Command::new(child()).args(["exit-with", "1"]))
+        .activity(source.subscribe())
+        .on_event(move |event| {
+            if matches!(event, SupervisorEvent::Exited(_)) {
+                writer.set(ProcessActivityState::Quiescing);
+            }
+            tx.send(event).unwrap();
+        })
+        .spawn()
+        .await
+        .unwrap();
+    next_supervisor_event(&mut rx, |e| matches!(e, SupervisorEvent::Restarting { .. })).await;
+    tokio::time::timeout(Duration::from_secs(5), supervisor.stop())
+        .await
+        .unwrap()
+        .unwrap();
+    next_supervisor_event(&mut rx, |e| matches!(e, SupervisorEvent::Stopped)).await;
+}
+
+#[tokio::test]
+async fn clean_exit_is_not_resurrected() {
+    use nyanpasu_utils::process::{ProcessActivitySource, ProcessActivityState};
+    let source = ProcessActivitySource::new();
+    source.set(ProcessActivityState::Quiescing);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor = Supervisor::builder(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+        Command::new(child()).args(["exit-with", "0"])
+    })
+    .activity(source.subscribe())
+    .on_event(move |event| {
+        tx.send(event).unwrap();
+    })
+    .spawn()
+    .await
+    .unwrap();
+    next_supervisor_event(&mut rx, |e| matches!(e, SupervisorEvent::Exited(_))).await;
+    source.set(ProcessActivityState::Active);
+    supervisor.stop().await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(!std::iter::from_fn(|| rx.try_recv().ok()).any(|e| matches!(
+        e,
+        SupervisorEvent::Restarting { .. } | SupervisorEvent::Started { .. }
+    )));
+}
+
+#[tokio::test]
+async fn pause_inside_factory_defers_spawn_without_repeating_preparation() {
+    use nyanpasu_utils::process::{ProcessActivitySource, ProcessActivityState};
+    let source = ProcessActivitySource::new();
+    let writer = source.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let preparations = Arc::new(AtomicUsize::new(0));
+    let prepared = preparations.clone();
+    let (built_tx, mut built_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor = Supervisor::builder(move || {
+        let call = count.fetch_add(1, Ordering::SeqCst);
+        if call == 1 {
+            writer.set(ProcessActivityState::Quiescing);
+            built_tx.send(()).unwrap();
+        }
+        Command::new(child()).args(if call == 0 {
+            ["exit-with", "1"]
+        } else {
+            ["sleep-forever", ""]
+        })
+    })
+    .activity(source.subscribe())
+    .readiness(ReadinessProbe::Acknowledged)
+    .backoff(Backoff::exponential(BackoffRange {
+        initial: Duration::ZERO,
+        max: Duration::ZERO,
+    }))
+    .before_spawn(move || {
+        prepared.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    })
+    .on_event(move |event| {
+        tx.send(event).unwrap();
+    })
+    .spawn()
+    .await
+    .unwrap();
+    built_rx.recv().await.unwrap();
+    next_supervisor_event(&mut rx, |e| matches!(e, SupervisorEvent::Restarting { .. })).await;
+    assert!(
+        rx.try_recv().is_err(),
+        "factory must not be followed by a spawn while quiescing"
+    );
+    source.set(ProcessActivityState::Active);
+    next_supervisor_event(&mut rx, |e| matches!(e, SupervisorEvent::Started { .. })).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(preparations.load(Ordering::SeqCst), 2);
+    supervisor.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn dropping_a_paused_supervisor_finishes() {
+    use nyanpasu_utils::process::{ProcessActivitySource, ProcessActivityState};
+    let source = ProcessActivitySource::new();
+    let writer = source.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor = Supervisor::builder(move || {
+        count.fetch_add(1, Ordering::SeqCst);
+        Command::new(child()).args(["exit-with", "1"])
+    })
+    .activity(source.subscribe())
+    .on_event(move |event| {
+        if matches!(event, SupervisorEvent::Exited(_)) {
+            writer.set(ProcessActivityState::Quiescing);
+        }
+        tx.send(event).unwrap();
+    })
+    .spawn()
+    .await
+    .unwrap();
+    next_supervisor_event(&mut rx, |e| matches!(e, SupervisorEvent::Restarting { .. })).await;
+    drop(supervisor);
+    next_supervisor_event(&mut rx, |e| matches!(e, SupervisorEvent::Stopped)).await;
+    source.set(ProcessActivityState::Active);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}

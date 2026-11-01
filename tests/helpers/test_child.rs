@@ -11,6 +11,17 @@ async fn main() {
         std::fs::write(pid_file, std::process::id().to_string()).unwrap();
         sleep_forever().await;
     }
+    #[cfg(windows)]
+    if std::env::current_exe().unwrap().file_stem().unwrap() == "nyanpasu-recording-shutdown-helper"
+    {
+        let calls = std::env::current_exe().unwrap().with_extension("calls");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(calls)
+            .unwrap();
+        writeln!(file, "called").unwrap();
+    }
     #[cfg(all(windows, feature = "process"))]
     if let Some(result) = nyanpasu_utils::process::windows_shutdown_helper_entry() {
         std::process::exit(if result.is_ok() { 0 } else { 1 });

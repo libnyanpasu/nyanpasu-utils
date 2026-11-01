@@ -13,6 +13,8 @@ pub(crate) enum PidFile {
 
 /// Builder for spawning a managed child process. See module docs for the contract.
 pub struct Command {
+    pub(crate) activity: Option<super::activity::ProcessActivity>,
+    pub(crate) restart_cancel: Option<tokio_util::sync::CancellationToken>,
     pub(crate) program: OsString,
     pub(crate) args: Vec<OsString>,
     pub(crate) envs: Vec<(OsString, OsString)>,
@@ -32,6 +34,8 @@ impl Command {
     /// Creates a command for `program` with process-module defaults.
     pub fn new(program: impl AsRef<OsStr>) -> Self {
         Self {
+            activity: None,
+            restart_cancel: None,
             program: program.as_ref().to_os_string(),
             args: Vec::new(),
             envs: Vec::new(),

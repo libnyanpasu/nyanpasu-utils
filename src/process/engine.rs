@@ -6,6 +6,7 @@ use processkit::prelude::StreamExt;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use super::{
+    activity::{ProcessActivity, requires_tree_kill},
     command::{Command, PidFile},
     error::ProcessError,
     event::{ProcessEvent, TerminatedPayload},
@@ -26,6 +27,7 @@ struct PumpParts {
     events: processkit::OutputEvents,
     group: Arc<processkit::ProcessGroup>,
     stdin_tx: Option<mpsc::Sender<StdinWrite>>,
+    activity: Option<ProcessActivity>,
     kill_grace: Duration,
     timeout_at: Option<tokio::time::Instant>,
     ev_tx: mpsc::Sender<ProcessEvent>,
@@ -177,15 +179,23 @@ async fn write_stdin(
     }
 }
 
+fn select_stop(ctrl: Ctrl, activity: Option<&ProcessActivity>, windows: bool) -> Ctrl {
+    match ctrl {
+        Ctrl::GracefulKill(reply) if requires_tree_kill(activity, windows) => Ctrl::Kill(reply),
+        ctrl => ctrl,
+    }
+}
+
 fn handle_ctrl(
     ctrl: Ctrl,
     group: &Arc<processkit::ProcessGroup>,
     stdin_tx: &Option<mpsc::Sender<StdinWrite>>,
     kill_grace: Duration,
+    activity: Option<&ProcessActivity>,
     hard_kill_at: &mut Option<tokio::time::Instant>,
     #[cfg(windows)] shutdown: &mut Option<super::windows_shutdown::Shutdown>,
 ) -> bool {
-    match ctrl {
+    match select_stop(ctrl, activity, cfg!(windows)) {
         Ctrl::Kill(reply) => {
             *hard_kill_at = None;
             let result = group
@@ -216,9 +226,14 @@ fn handle_ctrl(
                 *hard_kill_at = Some(deadline);
                 if let Some(mut command) = shutdown.request() {
                     let group = group.clone();
+                    let activity = activity.cloned();
                     // Keep draining core output and servicing controls while the
                     // helper runs. Its entire lifetime consumes this same grace.
                     tokio::spawn(async move {
+                        if requires_tree_kill(activity.as_ref(), true) {
+                            let _ = group.kill_all();
+                            return;
+                        }
                         match tokio::time::timeout_at(deadline, command.status()).await {
                             Ok(Ok(status)) if status.success() => {}
                             result => {
@@ -255,7 +270,7 @@ fn handle_ctrl(
     }
 }
 
-pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
+pub(crate) async fn spawn(mut cmd: Command) -> Result<SpawnParts, ProcessError> {
     let program = cmd.program.to_string_lossy().into_owned();
     let capacity = cmd.event_channel_capacity;
     let kill_grace = cmd.kill_grace;
@@ -293,6 +308,11 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
     };
     let group = Arc::new(processkit::ProcessGroup::new().map_err(spawn_error)?);
     let containment = map_containment(group.mechanism());
+    if let Some(cancel) = &cmd.restart_cancel
+        && !super::supervisor::wait_to_restart(&mut cmd.activity, cancel, Duration::ZERO).await
+    {
+        return Err(ProcessError::Engine("respawn cancelled".into()));
+    }
     let mut run = group.start(&pk).await.map_err(spawn_error)?;
     let timeout_at = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
     let pid = run
@@ -338,6 +358,7 @@ pub(crate) async fn spawn(cmd: Command) -> Result<SpawnParts, ProcessError> {
         events,
         group,
         stdin_tx,
+        activity: cmd.activity,
         kill_grace,
         timeout_at,
         ev_tx,
@@ -363,6 +384,7 @@ async fn pump(parts: PumpParts) {
         mut events,
         group,
         stdin_tx,
+        activity,
         kill_grace,
         timeout_at,
         ev_tx,
@@ -401,6 +423,7 @@ async fn pump(parts: PumpParts) {
                         &group,
                         &stdin_tx,
                         kill_grace,
+                        activity.as_ref(),
                         &mut hard_kill_at,
                         #[cfg(windows)]
                         &mut shutdown,
@@ -508,6 +531,7 @@ async fn pump(parts: PumpParts) {
                                 &group,
                                 &stdin_tx,
                                 kill_grace,
+                                activity.as_ref(),
                                 &mut hard_kill_at,
                                 #[cfg(windows)]
                                 &mut shutdown,
@@ -567,6 +591,7 @@ async fn pump(parts: PumpParts) {
                         &group,
                         &stdin_tx,
                         kill_grace,
+                        activity.as_ref(),
                         &mut hard_kill_at,
                         #[cfg(windows)]
                         &mut shutdown,
@@ -599,7 +624,55 @@ async fn cleanup_pid_file(pid_guard: &Option<PidFileGuard>) {
 
 #[cfg(test)]
 mod tests {
-    use super::split_stderr_tail;
+    use super::*;
+    use crate::process::{ProcessActivitySource, ProcessActivityState};
+
+    #[tokio::test]
+    async fn final_spawn_boundary_observes_quiescing_and_cancellation() {
+        let source = ProcessActivitySource::new();
+        source.set(ProcessActivityState::Quiescing);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut command = Command::new("definitely-not-a-real-binary-42");
+        command.activity = Some(source.subscribe());
+        command.restart_cancel = Some(cancel.clone());
+        let spawn = spawn(command);
+        tokio::pin!(spawn);
+        assert!(
+            futures_util::poll!(&mut spawn).is_pending(),
+            "quiescing must defer the OS spawn"
+        );
+        cancel.cancel();
+        assert!(
+            matches!(spawn.await, Err(ProcessError::Engine(message)) if message == "respawn cancelled")
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_graceful_stop_observes_quiescing() {
+        let source = ProcessActivitySource::new();
+        let reader = source.subscribe();
+        let (tx, mut rx) = mpsc::channel(1);
+        let (reply, _) = oneshot::channel();
+        tx.send(Ctrl::GracefulKill(reply))
+            .await
+            .unwrap_or_else(|_| panic!("queue stop"));
+        source.set(ProcessActivityState::Quiescing);
+        let ctrl = select_stop(rx.recv().await.unwrap(), Some(&reader), true);
+        assert!(
+            matches!(ctrl, Ctrl::Kill(_)),
+            "queued graceful stop must kill the tree"
+        );
+        source.set(ProcessActivityState::Active);
+        assert!(matches!(
+            select_stop(ctrl, Some(&reader), true),
+            Ctrl::Kill(_)
+        ));
+        let (reply, _) = oneshot::channel();
+        assert!(matches!(
+            select_stop(Ctrl::GracefulKill(reply), Some(&reader), true),
+            Ctrl::GracefulKill(_)
+        ));
+    }
 
     #[test]
     fn split_stderr_tail_reconstructs_joined_lines() {

@@ -36,3 +36,22 @@ fn gbk_stdout_emits_expected_bytes() {
         .unwrap();
     assert_eq!(&out.stdout[..4], &[0xD6, 0xD0, 0xCE, 0xC4]);
 }
+
+#[cfg(all(windows, feature = "process"))]
+#[test]
+fn recording_shutdown_helper_confirms_each_invocation() {
+    let dir = tempfile::tempdir().unwrap();
+    let helper = dir.path().join("nyanpasu-recording-shutdown-helper.exe");
+    std::fs::copy(child(), &helper).unwrap();
+    for _ in 0..2 {
+        let status = std::process::Command::new(&helper)
+            .args(["--nyanpasu-process-shutdown", "invalid-pid"])
+            .status()
+            .unwrap();
+        assert!(!status.success());
+    }
+    assert_eq!(
+        std::fs::read_to_string(helper.with_extension("calls")).unwrap(),
+        "called\ncalled\n"
+    );
+}

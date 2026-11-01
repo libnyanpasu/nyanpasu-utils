@@ -91,10 +91,12 @@ async fn ready(rx: &mut tokio::sync::mpsc::Receiver<ProcessEvent>) {
 async fn windows_helper_delivers_ctrlc_and_allows_drop() {
     let dir = tempfile::tempdir().unwrap();
     let cleanup = dir.path().join("cleanup");
+    let helper = dir.path().join("nyanpasu-recording-shutdown-helper.exe");
+    std::fs::copy(child(), &helper).unwrap();
     let (handle, mut rx) = Command::new(child())
         .arg("trap-ctrlc")
         .arg(&cleanup)
-        .windows_shutdown_helper(child())
+        .windows_shutdown_helper(&helper)
         .spawn()
         .await
         .unwrap();
@@ -105,6 +107,10 @@ async fn windows_helper_delivers_ctrlc_and_allows_drop() {
         .unwrap();
     assert_eq!(handle.wait().await.unwrap().code, Some(0));
     assert_eq!(std::fs::read_to_string(cleanup).unwrap(), "dropped");
+    assert_eq!(
+        std::fs::read_to_string(helper.with_extension("calls")).unwrap(),
+        "called\n"
+    );
     handle.graceful_kill().await.unwrap();
 }
 
@@ -235,4 +241,97 @@ async fn whole_tree_is_reaped() {
     // the kernel object must have reaped the grandchild too
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(!pid_alive(grandchild_pid), "grandchild survived tree kill");
+}
+
+#[cfg(windows)]
+async fn quiescing_tree_stop(cancel_in_background: bool) {
+    use nyanpasu_utils::process::{
+        ProcessActivitySource, ProcessActivityState, Supervisor, SupervisorEvent,
+    };
+    use tokio_util::sync::CancellationToken;
+
+    let dir = tempfile::tempdir().unwrap();
+    let helper = dir.path().join("nyanpasu-recording-shutdown-helper.exe");
+    std::fs::copy(child(), &helper).unwrap();
+    let factory_helper = helper.clone();
+    let source = ProcessActivitySource::new();
+    let token = CancellationToken::new();
+    let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor = Supervisor::builder(move || {
+        Command::new(child())
+            .arg("spawn-grandchild")
+            .windows_shutdown_helper(&factory_helper)
+    })
+    .activity(source.subscribe())
+    .cancel_token(token.clone())
+    .on_process_event(move |event| {
+        let _ = output_tx.send(event);
+    })
+    .on_event(move |event| {
+        let _ = event_tx.send(event);
+    })
+    .spawn()
+    .await
+    .unwrap();
+    let root_pid = match event_rx.recv().await.unwrap() {
+        SupervisorEvent::Started { pid } => pid,
+        event => panic!("expected Started, got {event:?}"),
+    };
+    let descendant = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match output_rx.recv().await.unwrap() {
+                ProcessEvent::Stdout(line) if line.starts_with("grandchild-pid:") => {
+                    break line
+                        .trim_start_matches("grandchild-pid:")
+                        .parse::<u32>()
+                        .unwrap();
+                }
+                ProcessEvent::Terminated(exit) => {
+                    panic!("tree exited before confirmation: {exit:?}")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    source.set(ProcessActivityState::Quiescing);
+    assert!(pid_alive(root_pid), "quiescing stopped a healthy child");
+    assert!(pid_alive(descendant));
+    if cancel_in_background {
+        token.cancel();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !matches!(event_rx.recv().await.unwrap(), SupervisorEvent::Stopped) {}
+        })
+        .await
+        .unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(10), supervisor.stop())
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while pid_alive(root_pid) || pid_alive(descendant) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("process tree survived quiescing stop");
+    assert!(
+        !helper.with_extension("calls").exists(),
+        "quiescing stop launched the helper"
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn quiescing_stop_skips_windows_helper_and_kills_descendants() {
+    quiescing_tree_stop(false).await;
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn quiescing_cancellation_skips_windows_helper_and_kills_descendants() {
+    quiescing_tree_stop(true).await;
 }

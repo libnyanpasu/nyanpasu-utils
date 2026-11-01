@@ -35,6 +35,7 @@
 //!
 //! Design: docs/superpowers/specs/2026-07-16-nyanpasu-utils-process-module-design.md
 
+mod activity;
 mod command;
 mod engine;
 mod error;
@@ -48,6 +49,7 @@ mod windows_shutdown;
 #[cfg(windows)]
 pub use windows_shutdown::windows_shutdown_helper_entry;
 
+pub use activity::{ProcessActivity, ProcessActivitySource, ProcessActivityState};
 pub use command::Command;
 pub use error::{ProcessError, ProcessOutput};
 pub use event::{ProcessEvent, TerminatedPayload};
