@@ -174,6 +174,7 @@ async fn kill_strategy_via_parent_cancellation_reaps_tree_and_observes_updates()
 }
 
 async fn graceful_supervisor_stop(request: StopRequest) {
+    assert_eq!(StopStrategy::default(), StopStrategy::Graceful);
     for strategy in [None, Some(StopStrategy::Graceful)] {
         #[cfg(windows)]
         let dir = tempfile::tempdir().unwrap();
