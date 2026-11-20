@@ -31,7 +31,7 @@ os_pipe = { version = "1.2.0", optional = true }
 parking_lot = "0.13.0"
 processkit = {
   git = "https://github.com/ZelAnton/ProcessKit-rs",
-  rev = "2adad322f1e3d7c471f3b9c8c625e44f356e416b",
+  rev = "defd9a8fc3215f7d94347e178708ad7b6bd5769f",
   features = ["tracing"],
   optional = true
 }
